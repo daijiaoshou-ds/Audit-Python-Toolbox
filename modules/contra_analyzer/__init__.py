@@ -7,6 +7,7 @@ class ContraAnalyzerModule:
     def __init__(self):
         self.ui = ContraAnalyzerUI()
         self.name = self.ui.name
+        # self.kb = KnowledgeBase() <--- 这行删掉！UI 里已经有了，这里不需要。
         
     def render(self, parent_frame):
         # 传递 app 实例给内部 UI，以便能获取 stop_event
