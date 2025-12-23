@@ -9,13 +9,14 @@ from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 
 from .core import ContraProcessor
 from .algorithm import ExhaustiveSolver
-from .memory import KnowledgeBase  # <--- 确保 memory.py 存在
+from .memory import KnowledgeBase
+from .occams_razor import OccamsRazor
 
 class ContraAnalyzerUI:
     def __init__(self):
         self.name = "对方科目分析器"
         self.processor = ContraProcessor()
-        self.kb = KnowledgeBase() # <--- 初始化大脑
+        self.kb = KnowledgeBase()
         self.loaded_file_path = ""
         
         self.map_keys = {
@@ -28,11 +29,18 @@ class ContraAnalyzerUI:
         }
         self.combo_vars = {}
         self.log_box = None
+        self.var_ai_pruning = None
 
     def render(self, parent):
         for w in parent.winfo_children(): w.destroy()
         
-        self.main_scroll = ctk.CTkScrollableFrame(parent, fg_color="#F2F4F8", scrollbar_button_color="#D0D0D0")
+        # 全局滚动容器 (颜色统一)
+        self.main_scroll = ctk.CTkScrollableFrame(
+            parent, 
+            fg_color="#F2F4F8", 
+            scrollbar_button_color="#E0E0E0",
+            scrollbar_button_hover_color="#D0D0D0"
+        )
         self.main_scroll.pack(fill="both", expand=True)
         
         ctk.CTkLabel(self.main_scroll, text="AI 对方科目分析器 (Pro)", font=("Microsoft YaHei", 24, "bold"), text_color="#333").pack(anchor="w", padx=20, pady=(20, 10))
@@ -119,19 +127,38 @@ class ContraAnalyzerUI:
     def create_complex_section(self, parent):
         f = self._frame(parent)
         ctk.CTkLabel(f, text="3. 复杂分录处理 (Excel 回合制)", font=("Microsoft YaHei", 15, "bold"), text_color="#007AFF").pack(anchor="w", padx=15, pady=15)
-        ctk.CTkLabel(f, text="说明：请导出Excel，勾选正确方案（记忆学习），然后导入生成最终结果。", text_color="#666", font=("Arial", 12)).pack(anchor="w", padx=15)
+        
+        tips = "说明：对于复杂分录，系统会生成所有可能的拆分组合。请导出 Excel，在正确的一行打 'x'，然后导入。"
+        ctk.CTkLabel(f, text=tips, text_color="#666", font=("Arial", 12)).pack(anchor="w", padx=15)
 
-        self.complex_list_frame = ctk.CTkScrollableFrame(f, height=200, fg_color="#F9F9F9")
+        self.complex_list_frame = ctk.CTkScrollableFrame(
+            f, height=200, fg_color="#F9F9F9",
+            scrollbar_button_color="#E0E0E0", scrollbar_button_hover_color="#D0D0D0"
+        )
         self.complex_list_frame.pack(fill="x", padx=15, pady=10)
         
         btn_row = ctk.CTkFrame(f, fg_color="transparent")
         btn_row.pack(fill="x", padx=15, pady=15)
-        self.btn_export = ctk.CTkButton(btn_row, text="📥 导出方案到 Excel", command=self.export_all_to_excel, width=180, fg_color="#007AFF", state="disabled")
-        self.btn_export.pack(side="left")
-        self.btn_import = ctk.CTkButton(btn_row, text="📤 导入勾选 & 生成最终结果", command=self.import_decisions, width=220, fg_color="#00C853", state="disabled")
-        self.btn_import.pack(side="right")
+        
+        # 剃刀开关
+        self.var_ai_pruning = ctk.BooleanVar(value=True)
+        self.chk_pruning = ctk.CTkCheckBox(btn_row, text="启用奥卡姆剃刀 (最简优先)", variable=self.var_ai_pruning, text_color="#333", font=("Microsoft YaHei", 12, "bold"))
+        self.chk_pruning.pack(side="left", padx=(0, 20))
+        
+        # === 按钮排版优化 ===
+        # 使用 Grid 布局，或者 pack 并排，不要隔太远
+        btns = ctk.CTkFrame(btn_row, fg_color="transparent")
+        btns.pack(side="left", expand=True) # 靠左或居中
+        
+        self.btn_export = ctk.CTkButton(btns, text="📥 导出方案到 Excel", command=self.export_all_to_excel, width=200, height=36, fg_color="#007AFF", state="disabled")
+        self.btn_export.pack(side="left", padx=10)
+        
+        self.btn_import = ctk.CTkButton(btns, text="📤 导入并生成结果", command=self.import_decisions, width=200, height=36, fg_color="#00C853", state="disabled")
+        self.btn_import.pack(side="left", padx=10)
 
-    # ================= 交互逻辑 =================
+    # ================= 交互逻辑 (其余保持不变) =================
+    # ... load_excel, run_analysis 等逻辑完全不变 ...
+    # (为节省篇幅，这里省略这部分重复代码，请保留上一版逻辑)
     def reset_all(self):
         self.processor = ContraProcessor()
         self.loaded_file_path = ""
@@ -145,7 +172,6 @@ class ContraAnalyzerUI:
         self.btn_export.configure(state="disabled")
         self.btn_import.configure(state="disabled")
         self.log("已重置")
-
     def load_excel(self):
         p = filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx;*.xls")])
         if not p: return
@@ -158,7 +184,6 @@ class ContraAnalyzerUI:
             except Exception as e:
                 self.log(f"读取失败: {e}")
         threading.Thread(target=t, daemon=True).start()
-
     def after_load(self, path, cols):
         self.loaded_file_path = path
         self.lbl_file.configure(text=os.path.basename(path))
@@ -169,7 +194,6 @@ class ContraAnalyzerUI:
             for c in cols:
                 if target in c: cb.set(c); break
         self.btn_analyze.configure(state="normal", fg_color="#007AFF")
-
     def run_analysis(self):
         mapping = {}
         for k, cb in self.combo_vars.items():
@@ -178,10 +202,8 @@ class ContraAnalyzerUI:
             mapping[k] = v
         self.btn_analyze.configure(state="disabled", text="分析中...")
         self.progress_bar.configure(mode="indeterminate"); self.progress_bar.start()
-        
         stop_event = None
         if hasattr(self, 'app'): stop_event = self.app.register_task(self.module_index)
-        
         def t():
             try:
                 self.log("开始数据清洗与分层...")
@@ -198,24 +220,19 @@ class ContraAnalyzerUI:
                 self.progress_bar.stop(); self.progress_bar.configure(mode="determinate"); self.progress_bar.set(1)
                 self.btn_analyze.configure(state="normal", text="重新分析")
         threading.Thread(target=t, daemon=True).start()
-
     def update_ui_after_analysis(self, stats):
         self.log(f"分析完成。待人工: {stats['complex_groups']}")
         self.lbl_stat_total.configure(text=str(stats['processed']))
         self.lbl_stat_simple.configure(text=str(stats['simple_solved']))
         self.lbl_stat_complex.configure(text=str(stats['complex_groups']))
-        
         for w in self.complex_list_frame.winfo_children(): w.destroy()
         sorted_samples = sorted(self.processor.cluster_samples.items(), key=lambda x: x[1]['count'], reverse=True)
-        
         for i, (k, sample) in enumerate(sorted_samples[:20]):
-            row = ctk.CTkFrame(self.complex_list_frame, fg_color="white")
-            row.pack(fill="x", pady=2)
+            row = ctk.CTkFrame(self.complex_list_frame, fg_color="white"); row.pack(fill="x", pady=2)
             ctk.CTkLabel(row, text=f"Top {i+1}", width=50, text_color="gray").pack(side="left")
             ctk.CTkLabel(row, text=f"[{sample['count']}笔]", width=60, text_color="red", font=("Arial", 12, "bold")).pack(side="left")
             name_display = sample['name'][:60] + "..." if len(sample['name']) > 60 else sample['name']
             ctk.CTkLabel(row, text=name_display, anchor="w", text_color="#333").pack(side="left", padx=10)
-            
         if stats['complex_groups'] > 0:
             self.btn_export.configure(state="normal"); self.btn_import.configure(state="normal")
         else:
@@ -223,179 +240,221 @@ class ContraAnalyzerUI:
 
     # ================= 核心：Excel 导出 =================
     def export_all_to_excel(self):
-        path = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile="方案选择.xlsx")
-        if not path: return
-        
-        self.btn_export.configure(state="disabled", text="计算中...")
-        self.progress_bar.configure(mode="indeterminate"); self.progress_bar.start()
-        
-        def t():
-            try:
-                solver = ExhaustiveSolver()
-                all_rows = []
-                total_patterns = len(self.processor.cluster_samples)
-                processed = 0
-                
-                sorted_samples = sorted(self.processor.cluster_samples.items(), key=lambda x: x[1]['count'], reverse=True)
-                
-                for pattern_idx, (key_hash, sample) in enumerate(sorted_samples, 1):
-                    pattern_name = sample['name']
-                    time.sleep(0.01)
-                    solutions, is_timeout = solver.calculate_combinations(sample['debits'], sample['credits'], max_solutions=100, timeout=1.5)
-                    
-                    if not solutions: continue
-
-                    # === 记忆排序 ===
-                    # 调用 KB 对方案进行排序，用户之前选过的会排在第一位
-                    solutions = self.kb.rank_solutions(solutions)
-
-                    for sol_idx, sol in enumerate(solutions, 1):
-                        option_id = f"{pattern_idx}-{sol_idx}"
-                        if is_timeout: option_id += "(超时)"
-                        
-                        all_rows.append({
-                            "模式特征": pattern_name,
-                            "方案ID": option_id,
-                            "请在此列打x": "",
-                            "会计科目": f"=== 方案 {option_id} ===",
-                            "借方金额": None, "对方科目": None, "拆分金额": None, "说明": "请勾选本行"
-                        })
-                        
-                        for d_subj, c_map in sol.items():
-                            valid_splits = {c: amt for c, amt in c_map.items() if abs(amt) > 0.001}
-                            
-                            for c_subj, amt in valid_splits.items():
-                                all_rows.append({
-                                    "模式特征": pattern_name,
-                                    "方案ID": option_id,
-                                    "请在此列打x": "",
-                                    "会计科目": d_subj,
-                                    "借方金额": amt, # 显示拆分金额
-                                    "对方科目": c_subj,
-                                    "拆分金额": amt,
-                                    "说明": "明细"
-                                })
-                                
-                    processed += 1
-                    self.progress_bar.set(processed / total_patterns)
-
-                self.log("写入 Excel...")
-                df_out = pd.DataFrame(all_rows)
-                cols = ["模式特征", "方案ID", "请在此列打x", "会计科目", "借方金额", "对方科目", "拆分金额"]
-                for c in cols: 
-                    if c not in df_out.columns: df_out[c] = ""
-                df_out = df_out[cols]
-
-                with pd.ExcelWriter(path, engine="openpyxl") as writer:
-                    df_out.to_excel(writer, index=False, sheet_name="方案选择")
-                    ws = writer.sheets["方案选择"]
-                    
-                    fill_yellow = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
-                    border = Border(bottom=Side(style='thin', color="EEEEEE"))
-                    font_bold = Font(bold=True, color="007AFF")
-                    
-                    for row in ws.iter_rows(min_row=2):
-                        if row[3].value and str(row[3].value).startswith("==="):
-                            row[2].fill = fill_yellow 
-                            row[2].border = border
-                            row[3].font = font_bold
-                    
-                    ws.column_dimensions['A'].width = 40
-                    ws.column_dimensions['D'].width = 25
-                    ws.column_dimensions['F'].width = 25
-
-                self.log(f"导出成功: {path}")
-                os.startfile(os.path.dirname(path))
-            except Exception as e:
-                self.log(f"导出错误: {e}")
-            finally:
-                self.progress_bar.stop(); self.progress_bar.set(0)
-                self.btn_export.configure(state="normal", text="📥 导出方案到 Excel")
-
-        threading.Thread(target=t, daemon=True).start()
-
-    # ================= 核心：闭环 (导入->学习->生成) =================
-    def import_decisions(self):
-            p = filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx")])
-            if not p: return
-            self.log("读取规则中...")
+            path = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile="方案选择.xlsx")
+            if not path: return
             
-            save_path = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile="最终对方科目分析表.xlsx")
-            if not save_path: return
-
-            self.btn_import.configure(state="disabled", text="生成最终报告...")
+            use_razor = self.var_ai_pruning.get()
+            self.btn_export.configure(state="disabled", text="计算中...")
             self.progress_bar.configure(mode="indeterminate"); self.progress_bar.start()
-
+            
             def t():
                 try:
-                    # 强制将 '方案ID' 读取为字符串，防止如果是纯数字被转成 int 导致匹配失败
-                    df = pd.read_excel(p, dtype={'方案ID': str})
+                    solver = ExhaustiveSolver()
+                    all_rows = []
+                    total_patterns = len(self.processor.cluster_samples)
+                    processed = 0
                     
-                    target_col = "请在此列打x"
-                    if target_col not in df.columns: 
-                        messagebox.showerror("错误", "列名不对，找不到'请在此列打x'"); return
+                    sorted_samples = sorted(self.processor.cluster_samples.items(), key=lambda x: x[1]['count'], reverse=True)
                     
-                    # 1. 学习过程
-                    # 找到打钩的行 (这是标题行)
-                    selected_rows = df[df[target_col].notna()] 
-                    
-                    if selected_rows.empty:
-                        self.log("警告: 未检测到任何打勾 'x'")
-                        return
+                    for pattern_idx, (key_hash, sample) in enumerate(sorted_samples, 1):
+                        pattern_name = sample['name']
+                        
+                        time.sleep(0.01)
+                        solutions, is_timeout = solver.calculate_combinations(
+                            sample['debits'], sample['credits'], max_solutions=200, timeout=2.0
+                        )
+                        
+                        if not solutions: continue
 
-                    learn_count = 0
-                    for _, row in selected_rows.iterrows():
-                        # pattern = row.get("模式特征") # 暂时用不到模式特征做反查，直接用ID
-                        opt_id = str(row.get("方案ID")).strip() # e.g., "1-2"
-                        
-                        if not opt_id or opt_id.lower() == 'nan': continue
-
-                        # === 修复点：不依赖"说明"列，改用"拆分金额"判断 ===
-                        # 1. 筛选出该方案ID的所有行
-                        subset = df[df["方案ID"] == opt_id]
-                        
-                        # 2. 筛选出"拆分金额"有数值的行 (即明细行)，排除标题行
-                        # to_numeric 会把空值转为 NaN，notna() 过滤掉 NaN
-                        details = subset[pd.to_numeric(subset["拆分金额"], errors='coerce').notna()]
-                        
-                        if not details.empty:
-                            # 重构 solution: {借方: {贷方: 金额}}
-                            reconstructed_sol = {}
-                            for _, d_row in details.iterrows():
-                                d = str(d_row["会计科目"]).strip()
-                                c = str(d_row["对方科目"]).strip()
-                                # 确保金额是浮点数
-                                try:
-                                    amt = float(d_row["拆分金额"])
-                                except:
-                                    continue
-                                
-                                if d not in reconstructed_sol: reconstructed_sol[d] = {}
-                                reconstructed_sol[d][c] = amt
+                        # === 评分与排序 ===
+                        annotated_solutions = []
+                        for sol in solutions:
+                            # 1. 计算奥卡姆得分
+                            razor_score, _ = OccamsRazor.score_solution(sol)
                             
-                            # 喂给大脑 (加分)
-                            self.kb.learn_from_solution(reconstructed_sol)
-                            learn_count += 1
-                    
-                    self.log(f"已强化记忆 {learn_count} 个模式的规则。")
-                    
-                    # 2. 生成最终报告
-                    self.log("正在应用规则并生成全量数据...")
-                    # 这一步会重新跑穷举，但因为刚才 kb.learn 过了，正确的方案会排第一，自动被选中
-                    final_df = self.processor.finalize_report(self.kb, self.log)
-                    
-                    # 导出
-                    final_df.to_excel(save_path, index=False)
-                    self.log(f"最终报告生成完毕: {save_path}")
-                    os.startfile(os.path.dirname(save_path))
-                    messagebox.showinfo("完成", "所有步骤已完成！")
+                            # 2. 计算记忆得分 (手动查库)
+                            mem_score = 0
+                            for d_key, c_map in sol.items():
+                                clean_d = d_key.split('__')[0]
+                                if clean_d in self.kb.matrix:
+                                    for c_key, amt in c_map.items():
+                                        if abs(amt) > 0.001:
+                                            clean_c = c_key.split('__')[0]
+                                            mem_score += self.kb.matrix[clean_d].get(clean_c, 0)
+                            
+                            annotated_solutions.append({
+                                "sol": sol,
+                                "razor": razor_score,
+                                "mem": mem_score
+                            })
+                        
+                        # 排序优先级：记忆分 > 奥卡姆分 (如果启用) > 默认
+                        # 注意：如果没启用奥卡姆，razor_score 还是算出来了，但不参与排序权重即可
+                        # 这里我们还是让它参与排序，只是显示给用户看
+                        if use_razor:
+                            annotated_solutions.sort(key=lambda x: (x['mem'], x['razor']), reverse=True)
+                        else:
+                            annotated_solutions.sort(key=lambda x: x['mem'], reverse=True)
 
+                        # === 生成 Excel 行 ===
+                        for sol_idx, item in enumerate(annotated_solutions, 1):
+                            sol = item['sol']
+                            razor_score = item['razor']
+                            mem_score = item['mem']
+                            
+                            option_id = f"{pattern_idx}-{sol_idx}"
+                            if is_timeout: option_id += "(超时)"
+                            
+                            # 默认勾选 Top 1
+                            check_mark = "x" if sol_idx == 1 else ""
+                            
+                            # 方案头
+                            all_rows.append({
+                                "模式特征": pattern_name,
+                                "方案ID": option_id,
+                                "请在此列打x": check_mark,
+                                "记忆得分": mem_score,  # 新增
+                                "奥卡姆得分": razor_score, # 新增
+                                "会计科目": f"=== 方案 {option_id} ===",
+                                "借方金额": None, "对方科目": None, "拆分金额": None, 
+                                "说明": "AI推荐" if check_mark else ""
+                            })
+                            
+                            for d_subj_raw, c_map in sol.items():
+                                d_name = d_subj_raw.split('__')[0]
+                                valid_splits = {c: amt for c, amt in c_map.items() if abs(amt) > 0.001}
+                                
+                                for c_subj_raw, amt in valid_splits.items():
+                                    c_name = c_subj_raw.split('__')[0]
+                                    all_rows.append({
+                                        "模式特征": pattern_name,
+                                        "方案ID": option_id,
+                                        "请在此列打x": check_mark,
+                                        "记忆得分": None,
+                                        "奥卡姆得分": None,
+                                        "会计科目": d_name,
+                                        "借方金额": amt, 
+                                        "对方科目": c_name,
+                                        "拆分金额": amt,
+                                        "说明": "明细"
+                                    })
+                                    
+                        processed += 1
+                        self.progress_bar.set(processed / total_patterns)
+
+                    self.log("写入 Excel...")
+                    df_out = pd.DataFrame(all_rows)
+                    
+                    # 更新列顺序
+                    cols = ["模式特征", "方案ID", "请在此列打x", "记忆得分", "奥卡姆得分", "会计科目", "借方金额", "对方科目", "拆分金额", "说明"]
+                    for c in cols: 
+                        if c not in df_out.columns: df_out[c] = ""
+                    df_out = df_out[cols]
+
+                    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+                        df_out.to_excel(writer, index=False, sheet_name="方案选择")
+                        ws = writer.sheets["方案选择"]
+                        
+                        fill_yellow = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+                        border = Border(bottom=Side(style='thin', color="EEEEEE"))
+                        font_bold = Font(bold=True, color="007AFF")
+                        
+                        for row in ws.iter_rows(min_row=2):
+                            if row[2].value and str(row[2].value).lower() == 'x': 
+                                pass # 可以在这里加个背景色
+                            if row[5].value and str(row[5].value).startswith("==="):
+                                row[2].fill = fill_yellow 
+                                row[2].border = border
+                                row[5].font = font_bold
+                        
+                        ws.column_dimensions['A'].width = 40
+                        ws.column_dimensions['D'].width = 10
+                        ws.column_dimensions['E'].width = 10
+                        ws.column_dimensions['F'].width = 20
+                        ws.column_dimensions['H'].width = 20
+
+                    self.log(f"导出成功: {path}")
+                    os.startfile(os.path.dirname(path))
                 except Exception as e:
-                    self.log(f"处理失败: {e}")
+                    self.log(f"导出错误: {e}")
                     import traceback
-                    print(traceback.format_exc()) # 打印详细报错到控制台方便调试
+                    print(traceback.format_exc())
                 finally:
                     self.progress_bar.stop(); self.progress_bar.set(0)
-                    self.btn_import.configure(state="normal", text="📤 导入勾选 & 生成最终结果")
+                    self.btn_export.configure(state="normal", text="📥 导出方案到 Excel")
 
             threading.Thread(target=t, daemon=True).start()
+
+    def import_decisions(self):
+        p = filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx")])
+        if not p: return
+        self.log("读取规则中...")
+        
+        save_path = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile="最终对方科目分析表.xlsx")
+        if not save_path: return
+
+        self.btn_import.configure(state="disabled", text="生成最终报告...")
+        self.progress_bar.configure(mode="indeterminate"); self.progress_bar.start()
+
+        def t():
+            try:
+                df = pd.read_excel(p, dtype={'方案ID': str})
+                target_col = "请在此列打x"
+                if target_col not in df.columns: 
+                    messagebox.showerror("错误", "列名不对"); return
+                
+                selected_rows = df[df[target_col].notna()] 
+                if selected_rows.empty:
+                    self.log("警告: 未检测到任何打勾 'x'")
+                    return
+
+                learn_count = 0
+                for _, row in selected_rows.iterrows():
+                    opt_id = str(row.get("方案ID")).strip()
+                    if not opt_id or opt_id.lower() == 'nan': continue
+
+                    subset = df[df["方案ID"] == opt_id]
+                    details = subset[pd.to_numeric(subset["拆分金额"], errors='coerce').notna()]
+                    
+                    if not details.empty:
+                        reconstructed_sol = {}
+                        for _, d_row in details.iterrows():
+                            d = str(d_row["会计科目"]).strip()
+                            c = str(d_row["对方科目"]).strip()
+                            try: amt = float(d_row["拆分金额"])
+                            except: continue
+                            
+                            # 学习时，为了兼容 core.py 里的 __D / __C 逻辑
+                            # 我们存入记忆库的 key 不需要带后缀，或者最好带上?
+                            # 这里的 d 和 c 是没带后缀的纯科目名。
+                            # 而 memory.py 里是按照 d_key.split('__')[0] 来匹配的。
+                            # 所以这里直接存纯科目名，memory.py 也要相应调整 logic?
+                            # 不，memory.py 里的 learn_from_solution 会再次 split。
+                            # 所以我们这里构造时，key 可以是纯科目名。
+                            
+                            if d not in reconstructed_sol: reconstructed_sol[d] = {}
+                            reconstructed_sol[d][c] = amt
+                        
+                        # 喂给大脑 (+500分)
+                        self.kb.learn_from_solution(reconstructed_sol, weight=500)
+                        learn_count += 1
+                
+                self.log(f"已强化记忆 {learn_count} 个模式的规则。")
+                self.log("正在应用规则并生成全量数据...")
+                
+                final_df = self.processor.finalize_report(self.kb, self.log)
+                
+                final_df.to_excel(save_path, index=False)
+                self.log(f"最终报告生成完毕: {save_path}")
+                os.startfile(os.path.dirname(save_path))
+                messagebox.showinfo("完成", "所有步骤已完成！")
+
+            except Exception as e:
+                self.log(f"处理失败: {e}")
+                import traceback
+                print(traceback.format_exc())
+            finally:
+                self.progress_bar.stop(); self.progress_bar.set(0)
+                self.btn_import.configure(state="normal", text="📤 导入并生成")
+
+        threading.Thread(target=t, daemon=True).start()

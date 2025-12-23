@@ -159,63 +159,69 @@ class ContraProcessor:
             self.cluster_samples[key_hash]["count"] += 1
 
     def finalize_report(self, kb, log_callback):
-        solver = ExhaustiveSolver()
-        final_rows = []
-        
-        grouped = self.df.groupby('_uid', sort=False)
-        total_groups = len(grouped)
-        processed = 0
-        
-        original_cols = [c for c in self.df.columns if not c.startswith('_')]
-        
-        for uid, group in grouped:
-            processed += 1
-            if processed % 100 == 0: log_callback(f"生成进度: {processed}/{total_groups}...")
+            solver = ExhaustiveSolver()
+            final_rows = []
             
-            # === 关键修正：这里必须使用清洗后的 clean_group 进行后续处理 ===
-            # 只有这样，移动过的负数才能在后续逻辑中被视为"对方"
-            clean_group = self._get_cleaned_amounts(group)
+            grouped = self.df.groupby('_uid', sort=False)
+            total_groups = len(grouped)
+            processed = 0
             
-            debits = clean_group[clean_group['_calc_debit'].abs() > 0.0001]
-            credits = clean_group[clean_group['_calc_credit'].abs() > 0.0001]
+            # 原始列名
+            original_cols = [c for c in self.df.columns if not c.startswith('_')]
             
-            if debits.empty and credits.empty:
-                self._append_original_rows(final_rows, group, original_cols, "无效分录")
-                continue
+            for uid, group in grouped:
+                processed += 1
+                if processed % 100 == 0: log_callback(f"生成进度: {processed}/{total_groups}...")
+                
+                clean_group = self._get_cleaned_amounts(group)
+                debits = clean_group[clean_group['_calc_debit'].abs() > 0.0001]
+                credits = clean_group[clean_group['_calc_credit'].abs() > 0.0001]
+                
+                if debits.empty and credits.empty:
+                    self._append_original_rows(final_rows, group, original_cols, "无效分录"); continue
 
-            unique_subjs = set(clean_group['_calc_subj'])
-            if "本年利润" in unique_subjs:
-                self._append_closing_entry(final_rows, group, original_cols)
-                continue
+                unique_subjs = set(clean_group['_calc_subj'])
+                if "本年利润" in unique_subjs:
+                    self._append_closing_entry(final_rows, group, original_cols); continue
 
-            d_types = len(set(debits['_calc_subj']))
-            c_types = len(set(credits['_calc_subj']))
+                d_types = len(set(debits['_calc_subj']))
+                c_types = len(set(credits['_calc_subj']))
 
-            # === 分发逻辑 (传入 clean_group) ===
-            if (d_types == 1 and c_types == 1) or \
-               (d_types == 1 and c_types > 1) or \
-               (d_types > 1 and c_types == 1):
-                if d_types == 1 and c_types == 1:
-                    target_c = credits.iloc[0]['_calc_subj']
-                    target_d = debits.iloc[0]['_calc_subj']
-                    # 1v1 使用 clean_group，确保金额列正确
-                    self._append_simple_rows(final_rows, clean_group, original_cols, target_c, target_d)
+                if (d_types == 1 and c_types == 1) or \
+                (d_types == 1 and c_types > 1) or \
+                (d_types > 1 and c_types == 1):
+                    if d_types == 1 and c_types == 1:
+                        self._append_simple_rows(final_rows, group, original_cols, credits.iloc[0]['_calc_subj'], debits.iloc[0]['_calc_subj'])
+                    else:
+                        self._append_1vN_rows_reconstruct(final_rows, uid, original_cols, debits, credits, d_types==1)
                 else:
-                    # 1vN 使用 clean_group
-                    self._append_1vN_rows_reconstruct(final_rows, uid, original_cols, debits, credits, d_types==1)
-            else:
-                # 复杂分录 使用 clean_group
-                self._append_complex_rows(final_rows, clean_group, original_cols, uid, kb, solver)
+                    self._append_complex_rows(final_rows, group, original_cols, uid, kb, solver)
 
-        df_final = pd.DataFrame(final_rows)
-        final_cols = original_cols + ["对方科目"]
-        for c in final_cols:
-            if c not in df_final.columns: df_final[c] = ""
+            df_final = pd.DataFrame(final_rows)
             
-        df_final[self.mapping['debit']] = pd.to_numeric(df_final[self.mapping['debit']], errors='coerce').fillna(0)
-        df_final[self.mapping['credit']] = pd.to_numeric(df_final[self.mapping['credit']], errors='coerce').fillna(0)
-        
-        return df_final[final_cols]
+            # === 核心修改：列重排 ===
+            # 目标：将 "对方科目" 插入到 "贷方金额" 后面
+            # 如果找不到贷方列，就放到最后
+            
+            output_cols = []
+            credit_col_name = self.mapping['credit']
+            
+            if credit_col_name in original_cols:
+                idx = original_cols.index(credit_col_name)
+                # 插入到贷方后面
+                output_cols = original_cols[:idx+1] + ["对方科目"] + original_cols[idx+1:]
+            else:
+                output_cols = original_cols + ["对方科目"]
+                
+            # 补全缺失列
+            for c in output_cols:
+                if c not in df_final.columns: df_final[c] = ""
+                
+            # 统一转数值
+            df_final[self.mapping['debit']] = pd.to_numeric(df_final[self.mapping['debit']], errors='coerce').fillna(0)
+            df_final[self.mapping['credit']] = pd.to_numeric(df_final[self.mapping['credit']], errors='coerce').fillna(0)
+            
+            return df_final[output_cols]
 
     # --- 辅助函数 ---
     

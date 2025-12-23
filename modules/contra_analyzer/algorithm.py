@@ -5,20 +5,30 @@ from collections import defaultdict
 
 class ExhaustiveSolver:
     """
-    穷举算法 v6.1 (无限制数学版 + 精度增强)
-    修复：允许负数 Driver 分配给正数 Bucket (反向增加容量)，解决正负混杂无解问题。
+    穷举算法 v8.0 (资金科目特别保护版)
+    特性：
+    1. 资金保护：'银行'/'现金' 科目禁止参与正负抵消，防止发生额虚增。
+    2. 智能转置：多遍历少。
+    3. 最小优先：按代数大小排序。
     """
     
+    # 定义敏感科目关键词
+    SENSITIVE_KEYWORDS = ["银行", "现金", "Bank", "Cash"]
+
+    @staticmethod
+    def is_sensitive(key_name):
+        """检查是否为资金类科目"""
+        return any(kw in key_name for kw in ExhaustiveSolver.SENSITIVE_KEYWORDS)
+
     @staticmethod
     def calculate_combinations(debit_ledger, credit_ledger, max_solutions=200, timeout=5.0):
         start_time = time.time()
         
         # 1. 预处理
-        # 严格保留原始符号，不过滤负数
         debits = {k: v for k, v in debit_ledger.items() if abs(v) > 0.001}
         credits = {k: v for k, v in credit_ledger.items() if abs(v) > 0.001}
         
-        # 2. 智能转置 (数量优先)
+        # 2. 智能转置
         n_debits = len(debits)
         n_credits = len(credits)
         is_transposed = False
@@ -34,7 +44,7 @@ class ExhaustiveSolver:
         # 3. 核心计算
         raw_results, is_timeout = ExhaustiveSolver._core_solve(drivers, buckets, max_solutions, timeout, start_time)
 
-        # 4. 结果还原
+        # 4. 结果还原 & 去重 & 会计校验
         deduped_results = []
         seen_hashes = set()
 
@@ -52,6 +62,25 @@ class ExhaustiveSolver:
                     for c_key, amount in c_map.items():
                         if abs(amount) > 0.001:
                             processed_res[d_key][c_key] = amount
+            
+            # 后置校验：确保金额守恒
+            is_valid_accounting = True
+            # 校验借方
+            for d_key, original_amt in debits.items():
+                split_sum = sum(processed_res[d_key].values())
+                if abs(split_sum - original_amt) > 0.001:
+                    is_valid_accounting = False; break
+            if not is_valid_accounting: continue
+            
+            # 校验贷方
+            c_received = defaultdict(float)
+            for d_key, c_map in processed_res.items():
+                for c_key, amt in c_map.items():
+                    c_received[c_key] += amt
+            for c_key, original_amt in credits.items():
+                if abs(c_received[c_key] - original_amt) > 0.001:
+                    is_valid_accounting = False; break
+            if not is_valid_accounting: continue
 
             # 签名去重
             temp_sig = []
@@ -74,29 +103,38 @@ class ExhaustiveSolver:
 
     @staticmethod
     def _core_solve(drivers_dict, buckets_dict, max_sol, timeout, start_time):
-        # === 排序策略：按【代数大小】从小到大 ===
-        # 负数 (-521.5) 会排在 正数 (10670) 前面
-        # 这样 -521.5 先去填坑 (或挖坑)，符合你的推导
+        # 排序：代数值从小到大
         driver_items = sorted(drivers_dict.items(), key=lambda x: x[1], reverse=False)
         bucket_items = sorted(list(buckets_dict.items()), key=lambda x: x[1], reverse=False)
         
         results = []
         is_timeout = [False]
 
-        def generate_combinations(target_amt, available_buckets):
+        def generate_combinations(driver_name, target_amt, available_buckets):
             valid_splits = []
             n = len(available_buckets)
             seen = set()
             
+            # 检查 Driver 是否敏感 (如银行存款)
+            is_driver_sensitive = ExhaustiveSolver.is_sensitive(driver_name)
+            
             # A. 全匹配 (Subset Sum)
-            # 寻找 buckets 的子集，其和等于 target_amt
             for r in range(1, n + 1):
                 for indices in itertools.combinations(range(n), r):
-                    # 精度修正
                     subset_sum = sum(available_buckets[i][1] for i in indices)
-                    subset_sum = round(subset_sum, 4)
                     
-                    if abs(subset_sum - round(target_amt, 4)) < 0.001:
+                    if abs(subset_sum - target_amt) < 0.001:
+                        
+                        # [保护] 如果 Driver 是敏感科目，严禁其拆分对象包含异号 (防止虚增)
+                        if is_driver_sensitive:
+                            has_mixed_sign = False
+                            for i in indices:
+                                # 如果 Driver是正，Bucket必须非负；Driver是负，Bucket必须非正
+                                b_amt = available_buckets[i][1]
+                                if target_amt > 0 and b_amt < -0.001: has_mixed_sign = True
+                                if target_amt < 0 and b_amt > 0.001: has_mixed_sign = True
+                            if has_mixed_sign: continue
+
                         split_map = {}
                         for i in indices:
                             split_map[available_buckets[i][0]] = available_buckets[i][1]
@@ -110,24 +148,51 @@ class ExhaustiveSolver:
             for i in range(n):
                 partial_name, partial_cap = available_buckets[i]
                 
-                # 剩余需要的钱
+                # [保护] 如果 Bucket 是敏感科目 (如银行存款)
+                # 它只能接受"包含"关系的拆分，严禁"扩容"
+                is_bucket_sensitive = ExhaustiveSolver.is_sensitive(partial_name)
+
                 others_indices = [x for x in range(n) if x != i]
                 n_others = len(others_indices)
                 
                 for r in range(n_others + 1):
                     for sub_indices in itertools.combinations(others_indices, r):
                         current_sum = sum(available_buckets[k][1] for k in sub_indices)
-                        current_sum = round(current_sum, 4)
-                        
                         needed = target_amt - current_sum
-                        needed = round(needed, 4)
                         
-                        # === 核心修正 ===
-                        # 只要 needed 不为 0，且不等于 partial_cap (那是全匹配)，就允许！
-                        # 不再检查 needed 是否在 (0, partial_cap) 之间。
-                        # 因为负数分配给正数 Bucket 是合法的 (相当于扩容)。
+                        if abs(needed) < 0.001: continue
                         
-                        if abs(needed) > 0.001 and abs(needed - partial_cap) > 0.001:
+                        # --- 核心判断逻辑 ---
+                        is_valid_part = False
+                        
+                        if is_bucket_sensitive:
+                            # 严格模式：Needed 必须在 Partial_Cap 内部
+                            # 同号，且绝对值更小
+                            if partial_cap > 0:
+                                if 0.001 < needed < partial_cap - 0.001: is_valid_part = True
+                            elif partial_cap < 0:
+                                if partial_cap + 0.001 < needed < -0.001: is_valid_part = True
+                        else:
+                            # 宽松模式：只要不等于 Cap 即可 (允许扩容/反向)
+                            if abs(needed - partial_cap) > 0.001:
+                                is_valid_part = True
+                                
+                        if is_valid_part:
+                            # [保护] 如果 Driver 是敏感科目，再次检查 sub_indices 的符号
+                            if is_driver_sensitive:
+                                # needed 已经通过上面的检查，现在检查 others
+                                has_mixed_sign = False
+                                # 检查 others
+                                for k in sub_indices:
+                                    b_amt = available_buckets[k][1]
+                                    if target_amt > 0 and b_amt < -0.001: has_mixed_sign = True
+                                    if target_amt < 0 and b_amt > 0.001: has_mixed_sign = True
+                                # 检查 needed (needed也是组成部分)
+                                if target_amt > 0 and needed < -0.001: has_mixed_sign = True
+                                if target_amt < 0 and needed > 0.001: has_mixed_sign = True
+                                
+                                if has_mixed_sign: continue
+
                             split_map = {}
                             for k in sub_indices:
                                 split_map[available_buckets[k][0]] = available_buckets[k][1]
@@ -140,39 +205,33 @@ class ExhaustiveSolver:
             return valid_splits
 
         def dfs(d_idx, current_allocations, current_buckets):
-            if len(results) >= max_sol: return
+            if len(results) >= max_sol * 2: return 
             if time.time() - start_time > timeout:
                 is_timeout[0] = True; return
 
             if d_idx == len(driver_items):
-                # 检查 Buckets 是否清零 (精度修正)
                 remain = sum(amt for _, amt in current_buckets)
-                if abs(remain) < 0.01: # 放宽一点点总误差容忍度
+                if abs(remain) < 0.01:
                     results.append(current_allocations)
                 return
 
             driver_name, driver_amt = driver_items[d_idx]
             
-            possible_splits = generate_combinations(driver_amt, current_buckets)
+            # 传入 driver_name 以便检查敏感性
+            possible_splits = generate_combinations(driver_name, driver_amt, current_buckets)
             
-            # 如果没找到方案，剪枝
             if not possible_splits: return
 
             for split in possible_splits:
-                if len(results) >= max_sol: return
+                if len(results) >= max_sol * 2: return
                 
                 next_alloc = current_allocations.copy()
                 next_alloc[driver_name] = split
                 
-                # 更新剩余 Buckets
                 next_buckets = []
                 for b_name, b_amt in current_buckets:
                     used = split.get(b_name, 0)
                     remain = b_amt - used
-                    remain = round(remain, 4) # 保持精度
-                    
-                    # 只要绝对值还有剩余，就带入下一轮
-                    # 即使是负数 Driver 把正数 Bucket 变成了更大的正数，也要带下去
                     if abs(remain) > 0.001:
                         next_buckets.append((b_name, remain))
                 
