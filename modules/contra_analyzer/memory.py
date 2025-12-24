@@ -1,80 +1,136 @@
 import os
 import json
-from collections import defaultdict
 from modules.path_manager import get_user_data_dir
+from .occams_razor import OccamsRazor
 
 class KnowledgeBase:
     """
-    记忆库 v3.0 (加权矩阵版)
-    逻辑：记录 [借方科目] 与 [贷方科目] 的亲密度分数。
-    机制：
-    1. 累加制：分数越高，代表关系越稳固。
-    2. 暴击制：用户手动导入的规则，给予高权重(例如+500)，实现快速纠错/覆盖。
+    记忆库 v9.1 (指纹排序修复版)
+    核心修复：指纹生成时，先提取所有连接对，清洗后再统一排序。
+    确保 [Solver生成的带后缀数据] 和 [Excel导入的不带后缀数据] 能生成完全一致的指纹。
     """
     def __init__(self):
-        self.file_path = os.path.join(get_user_data_dir(), "contra_matrix_v3.json")
-        self.matrix = self._load() # 结构: {借方: {贷方: 分数}}
+        self.file_path = os.path.join(get_user_data_dir(), "contra_memory_ema.json")
+        self.learning_rate = 0.6  
+        self.beta_factor = 0.5    
+        self.memory = self._load()
 
     def _load(self):
         if os.path.exists(self.file_path):
             try:
                 with open(self.file_path, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except:
-                pass
+            except: pass
         return {}
 
     def save(self):
         with open(self.file_path, 'w', encoding='utf-8') as f:
-            json.dump(self.matrix, f, ensure_ascii=False, indent=2)
+            json.dump(self.memory, f, ensure_ascii=False, indent=2)
 
-    def learn_from_solution(self, solution, weight=500):
+    def clear_memory(self):
+        self.memory = {}
+        if os.path.exists(self.file_path):
+            os.remove(self.file_path)
+
+    def _generate_fingerprint(self, solution):
         """
-        学习一个方案
-        weight: 权重。默认为 500 (暴击)，确保用户指定的方案下次一定排第一。
+        生成【规范化结构指纹】。
+        1. 遍历 solution，提取所有非零连接 (d, c)。
+        2. 清洗 d 和 c (去除后缀)。
+        3. 将所有 (clean_d, clean_c) 放入列表。
+        4. 对列表进行【统一排序】。
+        5. 拼接字符串。
         """
-        for d_subj, c_map in solution.items():
-            # 清洗科目名 (去掉 _idx_D 后缀)
-            clean_d = d_subj.split('__')[0]
-            
-            for c_subj, amt in c_map.items():
-                if abs(amt) > 0.001:
-                    clean_c = c_subj.split('__')[0]
-                    
-                    if clean_d not in self.matrix:
-                        self.matrix[clean_d] = {}
-                    
-                    # 累加分数
-                    current_score = self.matrix[clean_d].get(clean_c, 0)
-                    self.matrix[clean_d][clean_c] = current_score + weight
+        connections = []
         
+        for d, c_map in solution.items():
+            for c, amt in c_map.items():
+                if abs(amt) > 0.001:
+                    # 清洗 Key
+                    clean_d = str(d).split('__')[0].strip()
+                    clean_c = str(c).split('__')[0].strip()
+                    
+                    # 过滤无效数据
+                    if not clean_d or not clean_c: continue
+                    if clean_d.lower() == 'nan' or clean_c.lower() == 'nan': continue
+                    
+                    connections.append(f"{clean_d}->{clean_c}")
+        
+        # === 核心：统一排序 ===
+        # 无论输入字典的 Key 顺序如何，这里强制按字符串内容排序
+        connections.sort()
+        
+        return "|".join(connections)
+
+    def get_memory_score(self, pattern_name, solution):
+        fp = self._generate_fingerprint(solution)
+        if pattern_name in self.memory:
+            return self.memory[pattern_name].get(fp, 0.5)
+        return 0.5
+
+    def update_memory(self, pattern_name, all_solutions, selected_solution):
+        """
+        EMA 更新
+        """
+        if pattern_name not in self.memory:
+            self.memory[pattern_name] = {}
+        
+        # 生成标准指纹
+        target_fp = self._generate_fingerprint(selected_solution)
+        
+        # 记录本次出现的所有指纹
+        seen_fps = set()
+        
+        for sol in all_solutions:
+            fp = self._generate_fingerprint(sol)
+            if not fp: continue 
+            seen_fps.add(fp)
+            
+            m_old = self.memory[pattern_name].get(fp, 0.5)
+            
+            # 命中
+            if fp == target_fp:
+                reward = 1.0 
+            else:
+                reward = 0.0
+            
+            m_new = m_old * (1 - self.learning_rate) + reward * self.learning_rate
+            self.memory[pattern_name][fp] = round(m_new, 4)
+            
         self.save()
 
-    def rank_solutions(self, solutions):
+    def update_memory_by_fingerprint(self, pattern_name, all_solutions, target_fingerprint):
         """
-        给方案列表排序
-        计算每个方案的"总亲密度"，分数高的排前面
+        UI 直接传入已生成好的 target_fingerprint
         """
+        if pattern_name not in self.memory:
+            self.memory[pattern_name] = {}
+            
+        for sol in all_solutions:
+            fp = self._generate_fingerprint(sol)
+            if not fp: continue
+            
+            m_old = self.memory[pattern_name].get(fp, 0.5)
+            
+            reward = 1.0 if fp == target_fingerprint else 0.0
+            
+            m_new = m_old * (1 - self.learning_rate) + reward * self.learning_rate
+            self.memory[pattern_name][fp] = round(m_new, 4)
+            
+        self.save()
+
+    def calculate_total_score(self, razor_score, memory_score):
+        return round(razor_score * (1 + self.beta_factor * memory_score), 2)
+
+    def rank_solutions(self, solutions, pattern_name=""):
         if not solutions: return []
         
-        scored_solutions = []
+        scored = []
         for sol in solutions:
-            score = 0
-            for d_subj, c_map in sol.items():
-                clean_d = d_subj.split('__')[0]
-                
-                if clean_d in self.matrix:
-                    for c_subj, amt in c_map.items():
-                        if abs(amt) > 0.001:
-                            clean_c = c_subj.split('__')[0]
-                            # 查表加分
-                            relation_score = self.matrix[clean_d].get(clean_c, 0)
-                            score += relation_score
+            r = OccamsRazor.score_solution(sol)
+            m = self.get_memory_score(pattern_name, sol) if pattern_name else 0.5
+            total = self.calculate_total_score(r, m)
+            scored.append((total, sol))
             
-            scored_solutions.append((score, sol))
-        
-        # 降序排列 (分数高的在通过)
-        scored_solutions.sort(key=lambda x: x[0], reverse=True)
-        
-        # 返回排序后的方案
-        return [item[1] for item in scored_solutions]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [x[1] for x in scored]

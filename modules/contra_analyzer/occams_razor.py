@@ -1,55 +1,73 @@
 class OccamsRazor:
     """
-    奥卡姆剃刀剪枝器
-    核心思想：如无必要，勿增实体。
-    在会计分录中，这意味着：借贷关系的连接数越少，该方案越可能是真实的业务逻辑。
+    奥卡姆剃刀剪枝器 v3.0
+    公式：Score = 100 - (行数 * 1) - (分拆惩罚)
     """
     
     @staticmethod
     def score_solution(solution):
         """
-        计算方案的复杂度得分。
-        solution 结构: {借方科目: {贷方科目: 金额}}
-        
-        计分规则：
-        1. 初始分：100
-        2. 连接惩罚：每存在一个非零金额的 (借->贷) 关系，扣 1 分。
-        3. 碎片惩罚（可选）：如果金额是很碎的小数，额外扣分（暂时不加，保持简单）。
+        solution: {借方: {贷方: 金额}}
         """
         score = 100
-        connection_count = 0
         
-        for d_subj, c_map in solution.items():
-            for c_subj, amt in c_map.items():
-                # 只有真实存在的连接才算
-                if abs(amt) > 0.001:
-                    connection_count += 1
-                    score -= 1 # 每多一条线，扣1分
+        # 1. 统计借方数量(n) 和 贷方数量(m)
+        d_split_counts = {} 
+        c_split_counts = {}
         
-        # 也可以返回负的连接数，效果一样。这里返回标准化分数。
-        return score, connection_count
+        all_d = set(solution.keys())
+        all_c = set()
+        
+        # 计算总行数 (连接数)
+        total_lines = 0
+        
+        for d, c_map in solution.items():
+            valid_c_links = [c for c, amt in c_map.items() if abs(amt) > 0.001]
+            d_split_counts[d] = len(valid_c_links)
+            total_lines += len(valid_c_links)
+            
+            for c in valid_c_links:
+                all_c.add(c)
+                c_split_counts[c] = c_split_counts.get(c, 0) + 1
+                
+        n = len(all_d)
+        m = len(all_c)
+        
+        # === 扣分项 1: 行数惩罚 ===
+        score -= total_lines * 1
+        
+        # === 扣分项 2: 分拆惩罚 ===
+        # 规则：数量多的一方做 Driver (遍历方)，数量少的是 Bucket
+        # Driver 被分拆 -> 扣 5 分
+        # Bucket 被分拆 -> 扣 1 分
+        
+        debit_is_driver = (n >= m)
+        
+        penalty_driver = 5
+        penalty_bucket = 1
+        
+        if debit_is_driver:
+            # 借方是 Driver
+            for count in d_split_counts.values():
+                if count > 1: score -= (count - 1) * penalty_driver
+            for count in c_split_counts.values():
+                if count > 1: score -= (count - 1) * penalty_bucket
+        else:
+            # 贷方是 Driver
+            for count in c_split_counts.values():
+                if count > 1: score -= (count - 1) * penalty_driver
+            for count in d_split_counts.values():
+                if count > 1: score -= (count - 1) * penalty_bucket
+        
+        return round(score, 2)
 
     @staticmethod
     def rank_solutions(solutions):
-        """
-        对方案列表进行排序，最简单的排前面。
-        返回: (排序后的方案列表, 对应的分数列表)
-        """
-        if not solutions:
-            return [], []
-            
-        # 列表推导式计算所有得分
-        # item: (solution, score, connection_count)
+        """仅按奥卡姆得分排序 (辅助用，主逻辑在 UI)"""
+        if not solutions: return [], []
         scored_items = []
         for sol in solutions:
-            score, count = OccamsRazor.score_solution(sol)
+            score = OccamsRazor.score_solution(sol)
             scored_items.append((sol, score))
-            
-        # 排序：分数从大到小 (即连接数从小到大)
-        # 如果分数相同，保持原有顺序 (稳定排序)
         scored_items.sort(key=lambda x: x[1], reverse=True)
-        
-        sorted_solutions = [item[0] for item in scored_items]
-        sorted_scores = [item[1] for item in scored_items]
-        
-        return sorted_solutions, sorted_scores
+        return [x[0] for x in scored_items], [x[1] for x in scored_items]
