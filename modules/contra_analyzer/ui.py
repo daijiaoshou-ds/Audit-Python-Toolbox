@@ -14,7 +14,7 @@ from .occams_razor import OccamsRazor
 
 class ContraAnalyzerUI:
     def __init__(self):
-        self.name = "对方科目分析器"
+        self.name = "对方科目分析"
         self.processor = ContraProcessor()
         self.kb = KnowledgeBase()
         self.loaded_file_path = ""
@@ -27,7 +27,7 @@ class ContraAnalyzerUI:
         for w in parent.winfo_children(): w.destroy()
         self.main_scroll = ctk.CTkScrollableFrame(parent, fg_color="#F2F4F8", scrollbar_button_color="#E0E0E0", scrollbar_button_hover_color="#D0D0D0")
         self.main_scroll.pack(fill="both", expand=True)
-        ctk.CTkLabel(self.main_scroll, text="AI 对方科目分析器 (Pro)", font=("Microsoft YaHei", 24, "bold"), text_color="#333").pack(anchor="w", padx=20, pady=(20, 10))
+        ctk.CTkLabel(self.main_scroll, text="对方科目分析", font=("Microsoft YaHei", 24, "bold"), text_color="#333").pack(anchor="w", padx=20, pady=(20, 10))
         self.create_load_section(self.main_scroll)
         self.create_dashboard_section(self.main_scroll)
         self.create_complex_section(self.main_scroll)

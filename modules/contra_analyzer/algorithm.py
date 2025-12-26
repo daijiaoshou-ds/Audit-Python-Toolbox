@@ -5,19 +5,18 @@ from collections import defaultdict
 
 class ExhaustiveSolver:
     """
-    穷举算法 v8.0 (资金科目特别保护版)
-    特性：
-    1. 资金保护：'银行'/'现金' 科目禁止参与正负抵消，防止发生额虚增。
-    2. 智能转置：多遍历少。
-    3. 最小优先：按代数大小排序。
+    穷举算法 v9.1 (先全量后锁定版)
+    策略调整：
+    1. 优先执行【全量穷举】，保证不漏掉复杂组合。
+    2. 随后执行【完美锁定】，作为快速补充和保底。
+    3. 结果合并去重。
     """
     
     # 定义敏感科目关键词
-    SENSITIVE_KEYWORDS = ["银行", "现金", "Bank", "Cash"]
+    SENSITIVE_KEYWORDS = ["银行", "现金", "Bank", "Cash", "支付宝", "微信"]
 
     @staticmethod
     def is_sensitive(key_name):
-        """检查是否为资金类科目"""
         return any(kw in key_name for kw in ExhaustiveSolver.SENSITIVE_KEYWORDS)
 
     @staticmethod
@@ -41,10 +40,34 @@ class ExhaustiveSolver:
             drivers = debits
             buckets = credits
 
-        # 3. 核心计算
-        raw_results, is_timeout = ExhaustiveSolver._core_solve(drivers, buckets, max_solutions, timeout, start_time)
+        # === 3. 双轨计算 (顺序调整) ===
+        
+        # 轨道 B: 全量穷举 (主力，不做预锁定)
+        # 分配 70% 的时间预算，确保深度搜索
+        results_b, timeout_b = ExhaustiveSolver._core_solve(
+            drivers, buckets, max_solutions, timeout * 0.7, start_time, use_perfect_lock=False
+        )
+        
+        # 轨道 A: 完美锁定 (快速补充)
+        # 利用剩余时间，尝试寻找"捷径解"
+        # 即使全量穷举超时了，这个快速版也能瞬间给出几个保底解
+        remaining_time = timeout - (time.time() - start_time)
+        results_a = []
+        
+        if remaining_time > 0.1: # 只要还有一点时间
+             # 这里 max_solutions 可以传小点，因为只是补充
+            results_a, _ = ExhaustiveSolver._core_solve(
+                drivers, buckets, max_solutions, remaining_time, time.time(), use_perfect_lock=True
+            )
 
-        # 4. 结果还原 & 去重 & 会计校验
+        # 合并结果 (全量在前，锁定在后)
+        # 注意：后续的去重逻辑会处理重复项
+        raw_results = results_b + results_a
+        
+        # 标记超时：只要全量版超时了，就标记超时
+        is_timeout = timeout_b
+
+        # === 4. 结果还原 & 去重 & 会计校验 ===
         deduped_results = []
         seen_hashes = set()
 
@@ -65,14 +88,12 @@ class ExhaustiveSolver:
             
             # 后置校验：确保金额守恒
             is_valid_accounting = True
-            # 校验借方
             for d_key, original_amt in debits.items():
                 split_sum = sum(processed_res[d_key].values())
                 if abs(split_sum - original_amt) > 0.001:
                     is_valid_accounting = False; break
             if not is_valid_accounting: continue
             
-            # 校验贷方
             c_received = defaultdict(float)
             for d_key, c_map in processed_res.items():
                 for c_key, amt in c_map.items():
@@ -98,14 +119,50 @@ class ExhaustiveSolver:
             if res_hash not in seen_hashes:
                 seen_hashes.add(res_hash)
                 deduped_results.append(processed_res)
+                
+            if len(deduped_results) >= max_solutions: break
 
         return deduped_results, is_timeout
 
     @staticmethod
-    def _core_solve(drivers_dict, buckets_dict, max_sol, timeout, start_time):
-        # 排序：代数值从小到大
+    def _core_solve(drivers_dict, buckets_dict, max_sol, timeout, start_time, use_perfect_lock=True):
+        """
+        核心求解器
+        """
         driver_items = sorted(drivers_dict.items(), key=lambda x: x[1], reverse=False)
         bucket_items = sorted(list(buckets_dict.items()), key=lambda x: x[1], reverse=False)
+        
+        # === 预处理：完美锁定 ===
+        locked_allocations = {}
+        
+        if use_perfect_lock:
+            temp_buckets = buckets_dict.copy()
+            temp_drivers = drivers_dict.copy()
+            
+            sorted_d_keys = sorted(temp_drivers.keys(), key=lambda k: temp_drivers[k])
+            
+            for d_key in sorted_d_keys:
+                d_val = temp_drivers[d_key]
+                found_b = None
+                
+                for b_key, b_val in temp_buckets.items():
+                    if abs(d_val - b_val) < 0.001:
+                        # 敏感性检查
+                        is_d_sens = ExhaustiveSolver.is_sensitive(d_key)
+                        is_b_sens = ExhaustiveSolver.is_sensitive(b_key)
+                        if (is_d_sens or is_b_sens) and (d_val * b_val < 0):
+                            continue 
+                        
+                        found_b = b_key
+                        break
+                
+                if found_b:
+                    locked_allocations[d_key] = {found_b: d_val}
+                    del temp_drivers[d_key]
+                    del temp_buckets[found_b]
+            
+            driver_items = sorted(temp_drivers.items(), key=lambda x: x[1], reverse=False)
+            bucket_items = sorted(list(temp_buckets.items()), key=lambda x: x[1], reverse=False)
         
         results = []
         is_timeout = [False]
@@ -115,25 +172,19 @@ class ExhaustiveSolver:
             n = len(available_buckets)
             seen = set()
             
-            # 检查 Driver 是否敏感 (如银行存款)
             is_driver_sensitive = ExhaustiveSolver.is_sensitive(driver_name)
             
-            # A. 全匹配 (Subset Sum)
+            # A. 全匹配
             for r in range(1, n + 1):
                 for indices in itertools.combinations(range(n), r):
                     subset_sum = sum(available_buckets[i][1] for i in indices)
-                    
                     if abs(subset_sum - target_amt) < 0.001:
-                        
-                        # [保护] 如果 Driver 是敏感科目，严禁其拆分对象包含异号 (防止虚增)
                         if is_driver_sensitive:
-                            has_mixed_sign = False
+                            has_mixed = False
                             for i in indices:
-                                # 如果 Driver是正，Bucket必须非负；Driver是负，Bucket必须非正
-                                b_amt = available_buckets[i][1]
-                                if target_amt > 0 and b_amt < -0.001: has_mixed_sign = True
-                                if target_amt < 0 and b_amt > 0.001: has_mixed_sign = True
-                            if has_mixed_sign: continue
+                                b = available_buckets[i][1]
+                                if (target_amt>0 and b<-0.001) or (target_amt<0 and b>0.001): has_mixed=True
+                            if has_mixed: continue
 
                         split_map = {}
                         for i in indices:
@@ -144,14 +195,11 @@ class ExhaustiveSolver:
                             seen.add(key)
                             valid_splits.append(split_map)
 
-            # B. 部分匹配 (至多1个非边界)
+            # B. 部分匹配
             for i in range(n):
                 partial_name, partial_cap = available_buckets[i]
-                
-                # [保护] 如果 Bucket 是敏感科目 (如银行存款)
-                # 它只能接受"包含"关系的拆分，严禁"扩容"
                 is_bucket_sensitive = ExhaustiveSolver.is_sensitive(partial_name)
-
+                
                 others_indices = [x for x in range(n) if x != i]
                 n_others = len(others_indices)
                 
@@ -162,36 +210,24 @@ class ExhaustiveSolver:
                         
                         if abs(needed) < 0.001: continue
                         
-                        # --- 核心判断逻辑 ---
                         is_valid_part = False
-                        
                         if is_bucket_sensitive:
-                            # 严格模式：Needed 必须在 Partial_Cap 内部
-                            # 同号，且绝对值更小
                             if partial_cap > 0:
                                 if 0.001 < needed < partial_cap - 0.001: is_valid_part = True
                             elif partial_cap < 0:
                                 if partial_cap + 0.001 < needed < -0.001: is_valid_part = True
                         else:
-                            # 宽松模式：只要不等于 Cap 即可 (允许扩容/反向)
                             if abs(needed - partial_cap) > 0.001:
                                 is_valid_part = True
                                 
                         if is_valid_part:
-                            # [保护] 如果 Driver 是敏感科目，再次检查 sub_indices 的符号
                             if is_driver_sensitive:
-                                # needed 已经通过上面的检查，现在检查 others
-                                has_mixed_sign = False
-                                # 检查 others
+                                has_mixed = False
                                 for k in sub_indices:
-                                    b_amt = available_buckets[k][1]
-                                    if target_amt > 0 and b_amt < -0.001: has_mixed_sign = True
-                                    if target_amt < 0 and b_amt > 0.001: has_mixed_sign = True
-                                # 检查 needed (needed也是组成部分)
-                                if target_amt > 0 and needed < -0.001: has_mixed_sign = True
-                                if target_amt < 0 and needed > 0.001: has_mixed_sign = True
-                                
-                                if has_mixed_sign: continue
+                                    b = available_buckets[k][1]
+                                    if (target_amt>0 and b<-0.001) or (target_amt<0 and b>0.001): has_mixed=True
+                                if (target_amt>0 and needed<-0.001) or (target_amt<0 and needed>0.001): has_mixed=True
+                                if has_mixed: continue
 
                             split_map = {}
                             for k in sub_indices:
@@ -212,12 +248,14 @@ class ExhaustiveSolver:
             if d_idx == len(driver_items):
                 remain = sum(amt for _, amt in current_buckets)
                 if abs(remain) < 0.01:
-                    results.append(current_allocations)
+                    final_comb = current_allocations.copy()
+                    if use_perfect_lock and locked_allocations:
+                        final_comb.update(locked_allocations)
+                    results.append(final_comb)
                 return
 
             driver_name, driver_amt = driver_items[d_idx]
             
-            # 传入 driver_name 以便检查敏感性
             possible_splits = generate_combinations(driver_name, driver_amt, current_buckets)
             
             if not possible_splits: return
@@ -237,5 +275,9 @@ class ExhaustiveSolver:
                 
                 dfs(d_idx + 1, next_alloc, next_buckets)
 
-        dfs(0, {}, bucket_items)
+        if not driver_items:
+            if locked_allocations: results.append(locked_allocations)
+        else:
+            dfs(0, {}, bucket_items)
+            
         return results, is_timeout[0]
