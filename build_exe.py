@@ -46,7 +46,7 @@ def build():
         '--noupx',
         
         # 资源文件 (只打包小的)
-        '--add-data=assets/fonts;assets/fonts',
+         '--add-data=assets/fonts/simsun.ttc;assets/fonts', 
         '--add-data=assets/icon.ico;assets',    
         
         # 依赖收集

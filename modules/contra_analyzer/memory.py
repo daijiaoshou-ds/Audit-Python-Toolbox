@@ -40,8 +40,9 @@ class KnowledgeBase:
         3. 将所有 (clean_d, clean_c) 放入列表。
         4. 对列表进行【统一排序】。
         5. 拼接字符串。
+        【新增】使用 set 去重！确保 "A->B|A->B" 变成 "A->B"。这能解决多行同名科目导致的指纹不一致问题。
         """
-        connections = []
+        connections =  set() # <--- 改用 set
         
         for d, c_map in solution.items():
             for c, amt in c_map.items():
@@ -54,14 +55,14 @@ class KnowledgeBase:
                     if not clean_d or not clean_c: continue
                     if clean_d.lower() == 'nan' or clean_c.lower() == 'nan': continue
                     
-                    connections.append(f"{clean_d}->{clean_c}")
+                    # 添加连接对
+                    connections.add(f"{clean_d}->{clean_c}") # <--- add
         
         # === 核心：统一排序 ===
         # 无论输入字典的 Key 顺序如何，这里强制按字符串内容排序
-        connections.sort()
+        sorted_conns = sorted(list(connections))
+        return "|".join(sorted_conns)
         
-        return "|".join(connections)
-
     def get_memory_score(self, pattern_name, solution):
         fp = self._generate_fingerprint(solution)
         if pattern_name in self.memory:

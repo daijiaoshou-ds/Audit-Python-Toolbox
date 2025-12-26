@@ -54,6 +54,12 @@ class ContraProcessor:
             unique_subjs = set(clean_group['_calc_subj'])
             if "本年利润" in unique_subjs:
                 processed_count += 1; simple_count += 1; continue
+            
+            # === 【新增代码开始】 ===
+            # 汇兑损益拦截
+            if self._is_exchange_gain_loss_entry(unique_subjs):
+                processed_count += 1; simple_count += 1; continue
+            # === 【新增代码结束】 ===
 
             if debits.empty and credits.empty: continue
 
@@ -156,6 +162,12 @@ class ContraProcessor:
             unique_subjs = set(clean_group['_calc_subj'])
             if "本年利润" in unique_subjs:
                 self._append_closing_entry(final_rows, group, original_cols); continue
+            
+            # === 【新增代码开始】 ===
+            # 汇兑损益拦截与处理
+            if self._is_exchange_gain_loss_entry(unique_subjs):
+                self._append_exchange_entry(final_rows, group, original_cols); continue
+            # === 【新增代码结束】 ===
 
             d_types = len(set(debits['_calc_subj']))
             c_types = len(set(credits['_calc_subj']))
@@ -340,3 +352,63 @@ class ContraProcessor:
                         new_row[self.mapping['debit']] = 0
                         new_row["对方科目"] = d_subj
                         final_rows.append(new_row)
+
+    def _is_exchange_gain_loss_entry(self, unique_subjs):
+            """
+            判断是否为汇兑损益调汇分录 (High Precision Version)
+            策略：
+            1. 必须包含 '财务费用'。
+            2. 【白名单拦截】：严禁包含经营性损益科目 (管理/销售/研发/成本等)。
+            一旦包含，说明是计提类分录，直接返回 False。
+            3. 【精准计数】：统计往来/资金科目数量，但排除 '应付职工' 和 '应交税费'。
+            """
+            # 1. 核心特征检查
+            if not any("财务费用" in s for s in unique_subjs):
+                return False
+                
+            # 2. 【白名单拦截】经营性损益一票否决
+            # 如果分录里有这些科目，说明主角是经营业务，不是调汇
+            operating_keywords = [
+                "管理费用", "销售费用", "研发费用", "制造费用", 
+                "生产成本", "主营业务成本", "其他业务成本", 
+                "主营业务收入", "其他业务收入"
+            ]
+            
+            for s in unique_subjs:
+                if any(op in s for op in operating_keywords):
+                    return False # 发现杂质，判定为非调汇
+
+            # 3. 【精准计数】统计纯粹的货币性项目
+            # 关键词覆盖：资金、债权、债务
+            monetary_keywords = ["应收", "应付", "预收", "预付", "借款", "银行", "现金"]
+            
+            # 排除词：虽然带有"应付/应交"字样，但不属于外币调汇范畴
+            exclude_keywords = ["应付职工", "应交税", "应付股"]
+            
+            count = 0
+            for s in unique_subjs:
+                # 是货币性项目
+                if any(kw in s for kw in monetary_keywords):
+                    # 且不是职工薪酬或税费
+                    if not any(ex in s for ex in exclude_keywords):
+                        count += 1
+            
+            # 阈值保持为 3
+            return count >= 3
+
+    def _append_exchange_entry(self, final_rows, group, cols):
+        """
+        强制处理汇兑损益：非财务费用的对方全是财务费用
+        """
+        for _, row in group.iterrows():
+            new_row = self._copy_row_data(row, cols)
+            subj = str(row['_calc_subj'])
+            
+            # 只有金额不为0的行才填对方科目
+            if abs(row['_calc_debit']) > 0.001 or abs(row['_calc_credit']) > 0.001:
+                if "财务费用" in subj:
+                    new_row["对方科目"] = "汇兑损益调整对象"
+                else:
+                    new_row["对方科目"] = "财务费用"
+            
+            final_rows.append(new_row)
