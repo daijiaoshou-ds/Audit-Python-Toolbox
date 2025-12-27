@@ -12,19 +12,25 @@ class ContraProcessor:
 
     def load_data(self, file_path, mapping):
         self.mapping = mapping
+        # 1. 读取原始数据
         self.df = pd.read_excel(file_path, dtype=str)
         
         date_col = mapping['date']
         voucher_col = mapping['voucher_id']
         summ_col = mapping['summary']
         
+        # 2. 生成唯一标识符
         self.df['_uid'] = self.df[date_col].astype(str) + "_" + self.df[voucher_col].astype(str)
-        self.df['_calc_debit'] = pd.to_numeric(self.df[mapping['debit']], errors='coerce').fillna(0)
-        self.df['_calc_credit'] = pd.to_numeric(self.df[mapping['credit']], errors='coerce').fillna(0)
+
+        # 3. 只保留2位小数
+        self.df['_calc_debit'] = pd.to_numeric(self.df[mapping['debit']], errors='coerce').fillna(0).round(2)
+        self.df['_calc_credit'] = pd.to_numeric(self.df[mapping['credit']], errors='coerce').fillna(0).round(2)
         
+        # 4. 科目去除空格
         subj_col = mapping['subject']
         self.df['_calc_subj'] = self.df[subj_col].astype(str).str.strip()
 
+        # 5. 缓存元数据
         for uid, group in self.df.groupby('_uid'):
             first_row = group.iloc[0]
             unique_summs = group[summ_col].dropna().unique()
@@ -122,16 +128,20 @@ class ContraProcessor:
             suffix = "Pos" if amt >= 0 else "Neg"
             c_dict[f"{subj}__{suffix}__C"] += amt
         
+        # === 核心修复：聚合后再次 round，防止浮点累积误差 ===
+        clean_d_dict = {k: round(v, 2) for k, v in d_dict.items()}
+        clean_c_dict = {k: round(v, 2) for k, v in c_dict.items()}
+
         # 缓存：同时保存 pattern_name，供后续使用
         self.complex_data_cache[uid] = {
-            "debits": dict(d_dict), 
-            "credits": dict(c_dict),
+            "debits": dict(clean_d_dict), 
+            "credits": dict(clean_c_dict),
             "pattern_name": key_str
         }
 
         if key_hash not in self.cluster_samples:
             self.cluster_samples[key_hash] = {
-                "name": key_str, "debits": dict(d_dict), "credits": dict(c_dict),
+                "name": key_str, "debits": dict(clean_d_dict), "credits": dict(clean_c_dict),
                 "count": 1, "sample_uid": uid
             }
         else:
@@ -371,7 +381,7 @@ class ContraProcessor:
             operating_keywords = [
                 "管理费用", "销售费用", "研发费用", "制造费用", 
                 "生产成本", "主营业务成本", "其他业务成本", 
-                "主营业务收入", "其他业务收入"
+                "主营业务收入", "其他业务收入","营业收入","营业成本"
             ]
             
             for s in unique_subjs:
@@ -380,10 +390,10 @@ class ContraProcessor:
 
             # 3. 【精准计数】统计纯粹的货币性项目
             # 关键词覆盖：资金、债权、债务
-            monetary_keywords = ["应收", "应付", "预收", "预付", "借款", "银行", "现金"]
+            monetary_keywords = ["应收", "应付", "预收", "预付", "借款", "现金"]
             
             # 排除词：虽然带有"应付/应交"字样，但不属于外币调汇范畴
-            exclude_keywords = ["应付职工", "应交税", "应付股"]
+            exclude_keywords = ["应付职工", "应交税", "应付股","应付利"]
             
             count = 0
             for s in unique_subjs:
