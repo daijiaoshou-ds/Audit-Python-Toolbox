@@ -222,6 +222,8 @@ class ExhaustiveSolver:
                         if is_bucket_sensitive:
                             if partial_cap > 0:
                                 if 0.001 < needed < partial_cap - 0.001: is_valid_part = True
+                                # 新增修改：允许负数需求（比如 -1537）拆分正数桶（比如 66463）
+                                if -(partial_cap) - 0.001 < needed < -0.001: is_valid_part = True
                             elif partial_cap < 0:
                                 if partial_cap + 0.001 < needed < -0.001: is_valid_part = True
                         else:
