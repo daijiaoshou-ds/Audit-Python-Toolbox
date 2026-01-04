@@ -3,11 +3,12 @@ from tkinter import filedialog, messagebox
 import pandas as pd
 import threading
 import os
-import torch
 import difflib
 
-from modules.audit_radar.data_processor import AuditDataProcessor
-from modules.audit_radar.engine import AuditEngine
+# 不在开头导入，放入函数内部
+# import torch
+# from modules.audit_radar.data_processor import AuditDataProcessor
+# from modules.audit_radar.engine import AuditEngine
 
 # --- 风格配置 ---
 THEME_COLOR = "#007AFF"
@@ -245,6 +246,11 @@ class AuditRadarModule:
         
         def task():
             try:
+                # ====== 导入pytorch ======
+                import torch
+                from modules.audit_radar.data_processor import AuditDataProcessor
+                from modules.audit_radar.engine import AuditEngine
+                # ==============
                 self.log(f"特征列: {cat_cols}")
                 self.log(f"阈值: {threshold} | 轮数: {epochs}")
                 if self.filter_keywords: self.log(f"启用摘要过滤: {self.filter_keywords} (严格度: {sim_threshold:.1f})")

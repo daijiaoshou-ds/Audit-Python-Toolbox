@@ -20,3 +20,4 @@ torch>=2.2.0
 scikit-learn>=1.4.0
 sentence-transformers>=2.5.0
 jieba>=0.42.1
+matplotlib>=3.9.0

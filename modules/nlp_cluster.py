@@ -2,13 +2,16 @@ import os
 import re
 import threading
 import pandas as pd
-import jieba.analyse
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
 from modules.path_manager import get_model_path
 from difflib import SequenceMatcher
+
+# 取消开头加载，放入函数内部
+# from sklearn.cluster import KMeans
+# from sklearn.metrics import silhouette_score
+# import jieba.analyse
+
 
 # --- 注意：这里不再导入 sentence_transformers，防止启动卡顿 ---
 # try:
@@ -260,6 +263,9 @@ class NLPClusterModule:
         return re.sub(r'\s+', ' ', text).strip()
 
     def generate_cluster_label(self, texts_in_cluster, group_name):
+        # === 【插入】懒加载 jieba ===
+        import jieba.analyse 
+        # ==========================
         full_text = " ".join(texts_in_cluster)
         keywords = jieba.analyse.extract_tags(full_text, topK=15)
         
@@ -339,6 +345,15 @@ class NLPClusterModule:
         return mask_keep
 
     def run_process(self):
+        # === 【修改】把原来的 HAS_NLP 检查换成这个 ===
+        try:
+            from sentence_transformers import SentenceTransformer
+            from sklearn.cluster import KMeans
+            import jieba
+        except ImportError:
+            return messagebox.showerror("环境错误", "未检测到 sentence-transformers 或 sklearn")
+        # ==========================================
+
         # === 【核心修改】Lazy Load，把导入和检查移到这里 ===
         if not self.calculate_stats().any(): return messagebox.showwarning("提示", "有效数据为 0")
 
@@ -362,9 +377,11 @@ class NLPClusterModule:
 
         def task():
             try:
-                # === 【核心修改】在这里尝试导入 sentence_transformers ===
+                 # === 【插入】在这里加载重型库 ===
                 try:
                     from sentence_transformers import SentenceTransformer
+                    from sklearn.cluster import KMeans
+                    from sklearn.metrics import silhouette_score
                 except ImportError:
                     self.log("错误: 未检测到 sentence-transformers 库，无法运行。")
                     return
