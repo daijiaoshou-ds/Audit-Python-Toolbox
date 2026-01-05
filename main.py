@@ -130,7 +130,7 @@ class App(ctk.CTk):
         # 状态标签
         self.task_label = ctk.CTkLabel(self.float_frame, text="正在运行: 0", text_color="white", font=("Arial", 12, "bold"))
         self.task_label.pack(side="left", padx=(15, 10), pady=10)
-
+#c
         # 停止当前按钮 (红色警告色)
         self.btn_stop_current = ctk.CTkButton(
             self.float_frame, text="停止当前", width=80, height=30,
