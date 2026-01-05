@@ -62,6 +62,8 @@ def build():
         '--collect-all=jieba',
         # === 【新增】Scipy 相关 (匈牙利算法必须) ===
         '--collect-all=scipy', 
+        '--collect-all=polars',      # 【新增】Polars引擎
+        '--collect-all=pyarrow',     # 【新增】Polars转换依赖
         # --- 隐式导入 ---
         '--hidden-import=PIL._tkinter_finder',
         '--hidden-import=pydantic.deprecated.decorator',
