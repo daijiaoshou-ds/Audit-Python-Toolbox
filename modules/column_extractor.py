@@ -14,6 +14,7 @@ from tkinter import filedialog, messagebox
 import threading
 from difflib import SequenceMatcher
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, List, Dict, Any, Tuple, Set
 
 # ==================== 新增：xlsxwriter支持检测 ====================
@@ -199,10 +200,9 @@ def scan_header_and_map_columns(worksheet, mode: str,
     
     return best_mapping
 
-# ==================== 【核心升级】Polars处理逻辑 - Arrow零拷贝极速版 ====================
-def read_excel_with_polars(file_path: str, fname: str, log_func) -> Tuple[List[pl.DataFrame], Set[str], int, float]:
+def read_excel_with_polars(file_path: str, fname: str, log_func=None) -> Tuple[List[pl.DataFrame], Set[str], int, float]:
     """
-    使用Polars+fastexcel引擎极速读取Excel文件 - Arrow零拷贝版本
+    使用Polars+fastexcel引擎极速读取单个Excel文件 - Arrow零拷贝版本
     
     优化策略：
     1. 直接使用Polars读取（自动使用fastexcel引擎）
@@ -261,13 +261,31 @@ def read_excel_with_polars(file_path: str, fname: str, log_func) -> Tuple[List[p
     
     elapsed = time.time() - t_start
     
-    if all_dfs:
+    if log_func and all_dfs:
         total_rows = sum(df.height for df in all_dfs)
         log_func(f"  ✓ 读取完成: 共 {total_rows} 行，来自 {sheet_count} 个工作表 (耗时 {elapsed:.2f}s)")
-    else:
+    elif log_func and not all_dfs:
         log_func(f"  ✗ 读取失败，无数据")
     
     return all_dfs, all_columns, sheet_count, elapsed
+
+
+def read_excel_parallel(file_path: str, fname: str, log_func=None):
+    """
+    并行读取的辅助函数 - 返回结构化结果
+    
+    用于concurrent.futures并行处理
+    """
+    dfs, columns, count, elapsed = read_excel_with_polars(file_path, fname, log_func)
+    return {
+        'file_path': file_path,
+        'fname': fname,
+        'dfs': dfs,
+        'columns': columns,
+        'count': count,
+        'elapsed': elapsed,
+        'rows': sum(df.height for df in dfs) if dfs else 0
+    }
 
 
 def normalize_dataframes_for_concat(dfs: List[pl.DataFrame], target_columns: List[str], log_func) -> List[pl.DataFrame]:
@@ -349,6 +367,28 @@ def process_with_polars(files: List[str], target_sheets: List[str],
     
     log_func(f"发现 {len(files)} 个文件...")
     
+    # 🚀 智能并行读取配置
+    # 策略：fastexcel内部已对大文件多线程优化，
+    # 外部并行只对中小文件有效，大文件顺序读避免线程开销
+    
+    # 统计文件信息
+    file_info = []
+    for f in files:
+        size = os.path.getsize(f)
+        file_info.append({'path': f, 'size': size, 'is_large': size > 5 * 1024 * 1024})  # >5MB视为大文件
+    
+    large_files = [f for f in file_info if f['is_large']]
+    small_files = [f for f in file_info if not f['is_large']]
+    
+    # 大文件顺序读（fastexcel内部已多线程），小文件才并行
+    max_workers = min(4, len(small_files)) if small_files else 1
+    use_parallel = len(small_files) > 1 and max_workers > 1
+    
+    if large_files:
+        log_func(f"  📁 检测到 {len(large_files)} 个大文件 (>5MB)，将顺序读取")
+    if use_parallel:
+        log_func(f"🚀 开启并行读取模式 ({max_workers} 个线程) 处理 {len(small_files)} 个小文件...")
+    
     # 耗时统计
     time_read = 0
     time_convert = 0
@@ -360,16 +400,128 @@ def process_with_polars(files: List[str], target_sheets: List[str],
     all_columns = set()
     processed_count = 0
     
-    for i, file_path in enumerate(files):
-        # 检查中断
+    # ========== 读取文件 ==========
+    t_read_start = time.time()
+    
+    # 1. 先顺序读取所有大文件（fastexcel内部已多线程）
+    for f_info in large_files:
+        file_path = f_info['path']
+        fname = os.path.basename(file_path)
+        
         if stop_event and stop_event.is_set():
             log_func(">>> 用户强制停止任务！")
             return False, "任务已终止。"
         
-        fname = os.path.basename(file_path)
+        dfs, columns, count, read_time = read_excel_with_polars(file_path, fname, log_func)
         
-        try:
-            # 使用Polars+fastexcel读取（返回DataFrame列表）
+        if dfs:
+            all_dfs.extend(dfs)
+            all_columns.update(columns)
+            processed_count += count
+            total_rows += sum(df.height for df in dfs)
+            time_read += read_time
+        else:
+            log_func(f"  ⚠ {fname}: 大文件读取失败，尝试openpyxl...")
+            try:
+                temp_wb = load_workbook(file_path, read_only=False, data_only=True)
+                ws = temp_wb.active
+                file_data = []
+                headers = None
+                for row_idx, row in enumerate(ws.iter_rows(values_only=True), 1):
+                    if row_idx == 1:
+                        headers = [str(cell).strip() if cell is not None else f"column_{j}" for j, cell in enumerate(row)]
+                        continue
+                    row_data = list(row)
+                    if any(cell is not None for cell in row_data):
+                        row_dict = {}
+                        for j, cell in enumerate(row_data):
+                            col_name = headers[j] if j < len(headers) else f"column_{j}"
+                            row_dict[col_name] = cell
+                        row_dict['_来源工作簿'] = fname
+                        row_dict['_来源工作表'] = ws.title
+                        file_data.append(row_dict)
+                if file_data:
+                    fallback_df = pl.DataFrame(file_data, strict=False)
+                    all_dfs.append(fallback_df)
+                    all_columns.update(headers or [])
+                    processed_count += 1
+                    total_rows += len(file_data)
+                    log_func(f"  ✓ {fname}: openpyxl备选成功 {len(file_data)} 行")
+                temp_wb.close()
+            except Exception as e2:
+                log_func(f"  ✗ {fname}: openpyxl备选也失败")
+    
+    # 2. 并行读取所有小文件
+    if use_parallel:
+        log_func(f"  🚀 并行读取 {len(small_files)} 个小文件...")
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_file = {
+                executor.submit(read_excel_parallel, f['path'], os.path.basename(f['path']), None): f['path']
+                for f in small_files
+            }
+            
+            for future in as_completed(future_to_file):
+                if stop_event and stop_event.is_set():
+                    log_func(">>> 用户强制停止任务！")
+                    return False, "任务已终止。"
+                
+                file_path = future_to_file[future]
+                fname = os.path.basename(file_path)
+                
+                try:
+                    result = future.result()
+                    
+                    if result['dfs']:
+                        all_dfs.extend(result['dfs'])
+                        all_columns.update(result['columns'])
+                        processed_count += result['count']
+                        total_rows += result['rows']
+                        time_read += result['elapsed']
+                        log_func(f"  ✓ {result['fname']}: {result['rows']} 行 ({result['elapsed']:.2f}s)")
+                    else:
+                        log_func(f"  ⚠ {fname}: 小文件读取失败，尝试openpyxl...")
+                        try:
+                            temp_wb = load_workbook(file_path, read_only=False, data_only=True)
+                            ws = temp_wb.active
+                            file_data = []
+                            headers = None
+                            for row_idx, row in enumerate(ws.iter_rows(values_only=True), 1):
+                                if row_idx == 1:
+                                    headers = [str(cell).strip() if cell is not None else f"column_{j}" for j, cell in enumerate(row)]
+                                    continue
+                                row_data = list(row)
+                                if any(cell is not None for cell in row_data):
+                                    row_dict = {}
+                                    for j, cell in enumerate(row_data):
+                                        col_name = headers[j] if j < len(headers) else f"column_{j}"
+                                        row_dict[col_name] = cell
+                                    row_dict['_来源工作簿'] = fname
+                                    row_dict['_来源工作表'] = ws.title
+                                    file_data.append(row_dict)
+                            if file_data:
+                                fallback_df = pl.DataFrame(file_data, strict=False)
+                                all_dfs.append(fallback_df)
+                                all_columns.update(headers or [])
+                                processed_count += 1
+                                total_rows += len(file_data)
+                                log_func(f"  ✓ {fname}: openpyxl备选成功 {len(file_data)} 行")
+                            temp_wb.close()
+                        except Exception as e2:
+                            log_func(f"  ✗ {fname}: openpyxl备选也失败")
+                            
+                except Exception as e:
+                    log_func(f"  ✗ {fname}: 读取异常 - {e}")
+    elif small_files:
+        # 没有并行但有小文件，顺序读
+        for f_info in small_files:
+            file_path = f_info['path']
+            fname = os.path.basename(file_path)
+            
+            if stop_event and stop_event.is_set():
+                log_func(">>> 用户强制停止任务！")
+                return False, "任务已终止。"
+            
             dfs, columns, count, read_time = read_excel_with_polars(file_path, fname, log_func)
             
             if dfs:
@@ -378,58 +530,9 @@ def process_with_polars(files: List[str], target_sheets: List[str],
                 processed_count += count
                 total_rows += sum(df.height for df in dfs)
                 time_read += read_time
-            else:
-                # 如果Polars读取失败，尝试openpyxl备选
-                log_func(f"[{i+1}/{len(files)}] ✗ {fname}: Polars读取失败，尝试openpyxl...")
-                try:
-                    temp_wb = load_workbook(file_path, read_only=False, data_only=True)
-                    ws = temp_wb.active
-                    
-                    file_data = []
-                    headers = None
-                    
-                    for row_idx, row in enumerate(ws.iter_rows(values_only=True), 1):
-                        if row_idx == 1:
-                            headers = [str(cell).strip() if cell is not None else f"column_{j}" for j, cell in enumerate(row)]
-                            continue
-                        
-                        row_data = list(row)
-                        if any(cell is not None for cell in row_data):
-                            row_dict = {}
-                            for j, cell in enumerate(row_data):
-                                col_name = headers[j] if j < len(headers) else f"column_{j}"
-                                row_dict[col_name] = cell
-                            row_dict['_来源工作簿'] = fname
-                            row_dict['_来源工作表'] = ws.title
-                            file_data.append(row_dict)
-                    
-                    if file_data:
-                        # 转换为Polars DataFrame
-                        fallback_df = pl.DataFrame(file_data, strict=False)
-                        all_dfs.append(fallback_df)
-                        all_columns.update(headers or [])
-                        processed_count += 1
-                        total_rows += len(file_data)
-                        log_func(f"[{i+1}/{len(files)}] ✓ {fname}: openpyxl备选成功 {len(file_data)} 行")
-                    
-                    temp_wb.close()
-                except Exception as e2:
-                    log_func(f"[{i+1}/{len(files)}] ✗ {fname}: openpyxl备选也失败")
-        
-        except Exception as e:
-            log_func(f"[{i+1}/{len(files)}] ✗ {fname}: {e}")
-            # 尝试修复文件后重试
-            if repair_excel_file(file_path, log_func):
-                try:
-                    dfs, columns, count, _ = read_excel_with_polars(file_path, fname, lambda x: None)
-                    if dfs:
-                        all_dfs.extend(dfs)
-                        all_columns.update(columns)
-                        processed_count += count
-                        total_rows += sum(df.height for df in dfs)
-                        log_func(f"[{i+1}/{len(files)}] ✓ {fname}: 修复后读取成功 {sum(df.height for df in dfs)} 行")
-                except:
-                    pass
+    
+    time_read = time.time() - t_read_start
+    log_func(f"  📊 文件读取完成: 共 {total_rows} 行 (耗时 {time_read:.2f}s)")
     
     if not all_dfs:
         return False, "未提取到任何数据。"
@@ -873,7 +976,6 @@ class ColumnExtractorModule:
         scroll.pack(fill="both", expand=True, padx=10, pady=10)
 
         ctk.CTkLabel(scroll, text="Excel数据提取器", font=("Microsoft YaHei", 24, "bold"), text_color="#333").pack(anchor="w", padx=20, pady=(10, 20))
-
 
         # --- 1. 数据源 ---
         frame_src = ctk.CTkFrame(scroll, fg_color="white", corner_radius=8, border_width=1, border_color="#E5E5E5")

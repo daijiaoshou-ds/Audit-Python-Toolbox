@@ -79,7 +79,7 @@ class App(ctk.CTk):
         self.nav_scroll.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
 
         self.version_label = ctk.CTkLabel(
-            self.sidebar_container, text="v0.0.1", font=ctk.CTkFont(family="Arial", size=12), text_color="#999999"
+            self.sidebar_container, text="v0.3", font=ctk.CTkFont(family="Arial", size=12), text_color="#999999"
         )
         self.version_label.grid(row=2, column=0, pady=10, sticky="s")
 
