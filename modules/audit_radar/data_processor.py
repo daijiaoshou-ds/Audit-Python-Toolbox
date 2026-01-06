@@ -1,16 +1,26 @@
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import LabelEncoder, StandardScaler
-import torch
+
+# 函数内部懒导入
+# from sklearn.preprocessing import LabelEncoder, StandardScaler
+# import torch
 
 class AuditDataProcessor:
     def __init__(self):
         self.label_encoders = {}
-        self.scaler = StandardScaler()
+        self._scaler = None
         self.cat_cols = []
         self.cont_cols = []
         self.cat_dims = []
         self.emb_dims = []
+
+    @property
+    def scaler(self):
+        """懒加载 StandardScaler"""
+        if self._scaler is None:
+            from sklearn.preprocessing import StandardScaler
+            self._scaler = StandardScaler()
+        return self._scaler
         
     def preprocess(self, df, cont_col_names, cat_col_names):
         """
@@ -18,6 +28,8 @@ class AuditDataProcessor:
         cont_col_names: 金额列名列表
         cat_col_names: 分类列名列表
         """
+        from sklearn.preprocessing import LabelEncoder
+
         # 拷贝副本
         data = df.copy()
         
@@ -100,6 +112,9 @@ class AuditDataProcessor:
         return data
 
     def get_tensors(self, df, device):
+
+        import torch
+
         if self.cat_cols:
             cats = np.stack([df[c].values for c in self.cat_cols], 1)
             cats = torch.tensor(cats, dtype=torch.long).to(device)

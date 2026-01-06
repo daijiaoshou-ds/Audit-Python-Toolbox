@@ -1,17 +1,18 @@
 import os
-import fitz  # PyMuPDF
 import pandas as pd
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import threading
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 import sys
-import pythoncom
-from docx2pdf import convert as docx_convert
+
+# import fitz  # PyMuPDF
+# from reportlab.lib import colors
+# from reportlab.lib.pagesizes import A4
+# from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+# from reportlab.pdfbase import pdfmetrics
+# from reportlab.pdfbase.ttfonts import TTFont
+# import pythoncom
+# from docx2pdf import convert as docx_convert
 
 # --- 资源路径辅助 ---
 # 优先尝试使用统一路径管理器
@@ -32,6 +33,9 @@ def get_resource_path(relative_path):
 
 def convert_image_to_pdf(img_path, output_path):
     """图片转PDF"""
+    # 懒导入
+    import fitz  # PyMuPDF
+
     try:
         img_doc = fitz.open(img_path)
         pdf_bytes = img_doc.convert_to_pdf()
@@ -45,6 +49,14 @@ def convert_image_to_pdf(img_path, output_path):
 
 def convert_excel_to_pdf(excel_path, font_path, output_path):
     """Excel转PDF"""
+    # 懒导入
+    import fitz
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
     try:
         df = pd.read_excel(excel_path)
         df = df.fillna("")
@@ -70,6 +82,12 @@ def convert_excel_to_pdf(excel_path, font_path, output_path):
 
 def convert_word_to_pdf(word_path, output_path):
     """Word转PDF"""
+    # 懒导入
+    import fitz
+    import pythoncom
+    from docx2pdf import convert as docx_convert
+
+
     try:
         pythoncom.CoInitialize()
         docx_convert(word_path, output_path)
@@ -85,6 +103,8 @@ def convert_word_to_pdf(word_path, output_path):
 # === 【修改点 1】新增 stop_event 参数 ===
 def core_merge_process(src_folder, recursive, include_others, include_word, keep_converted, split_enabled, split_step, log_callback, stop_event=None):
     
+    import fitz
+
     font_path = get_resource_path(os.path.join("assets", "fonts", "simsun.ttc"))
     if not os.path.exists(font_path) and include_others:
         return "错误: 缺少字体文件 simsun.ttc"

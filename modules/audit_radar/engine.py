@@ -1,16 +1,26 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
 import numpy as np
 from .model import AuditAutoEncoder
 
+# import torch
+# import torch.nn as nn
+# import torch.optim as optim
+
 class AuditEngine:
+
     def __init__(self, processor, device=None):
         self.processor = processor
-        self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = device
         self.model = None
         
     def train_model(self, cats, conts, epochs=100, lr=0.001, log_callback=None, stop_event=None):
+        import torch
+        import torch.nn as nn
+        import torch.optim as optim
+
+        # 设备初始化延迟到这里
+        if self.device is None:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
         self.model = AuditAutoEncoder(
             num_cont=len(self.processor.cont_cols),
             cat_dims=self.processor.cat_dims,
@@ -45,6 +55,9 @@ class AuditEngine:
         return True, final_loss
 
     def predict_with_reason(self, cats, conts, raw_df=None, amt_cols=None, threshold=0):
+        
+        import torch
+        
         self.model.eval()
         with torch.no_grad():
             decoded, original = self.model(cats, conts)

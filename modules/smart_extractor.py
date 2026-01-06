@@ -5,7 +5,6 @@ import threading
 import time
 import base64
 import concurrent.futures
-import fitz  # PyMuPDF
 import pandas as pd
 import tkinter as tk
 import customtkinter as ctk
@@ -15,6 +14,7 @@ from pydantic import create_model, Field, ValidationError
 from typing import List, Optional
 from modules.ai_manager import AIManager, TokenManager
 from modules.path_manager import get_schema_dir
+# import fitz  # PyMuPDF
 
 # 默认用户指令 (保持不变)
 DEFAULT_USER_INSTRUCTION = """这是一份文档。
@@ -93,6 +93,9 @@ class LogicCore:
 
     @staticmethod
     def pdf_to_base64_images(path):
+
+        import fitz
+
         images = []
         doc = fitz.open(path)
         for page_num in range(len(doc)):
@@ -105,6 +108,9 @@ class LogicCore:
     
     @staticmethod
     def pdf_to_text(path):
+
+        import fitz
+
         texts = []
         doc = fitz.open(path)
         for page in doc:

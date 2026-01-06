@@ -1,9 +1,9 @@
 import os
 import sys
-import fitz  # PyMuPDF
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import threading
+# import fitz  
 
 # --- 资源路径辅助函数 ---
 from modules.path_manager import get_asset_path  # 使用统一的 path_manager，如果没引入，也可以用下面的备用
@@ -22,6 +22,8 @@ def add_index_to_pdf(file_path, font_path, log_callback, stop_event=None):
     """
     使用 TextWriter 修复中文显示问题，并定位到右上角
     """
+    import fitz
+    
     doc = None
     temp_path = file_path + ".tmp" # 提前定义，方便 finally 清理
     
