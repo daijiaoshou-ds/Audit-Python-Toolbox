@@ -31,3 +31,9 @@ assets/models/**/pytorch_model.bin
 # 忽略临时解压或缓存
 assets/models/**/._____temp/
 assets/models/**/__pycache__/
+
+# 忽略测试文件
+test.py
+
+# --- 5. 文档文件 ---
+imports_analysis.md
