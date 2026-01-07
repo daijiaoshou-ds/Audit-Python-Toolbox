@@ -200,18 +200,64 @@ def scan_header_and_map_columns(worksheet, mode: str,
     
     return best_mapping
 
-def read_excel_with_polars(file_path: str, fname: str, log_func=None) -> Tuple[List[pl.DataFrame], Set[str], int, float]:
+def filter_sheet_names(all_sheet_names: List[str], target_sheets: List[str], exact_match: bool = False) -> List[str]:
+    """
+    根据匹配模式筛选工作表
+    
+    Args:
+        all_sheet_names: Excel文件中实际存在的所有工作表名称列表
+        target_sheets: 用户输入的目标名称列表
+        exact_match: 是否精确匹配
+            - True: 精确匹配（完全相等，去除首尾空格后比较）
+            - False: 模糊匹配（包含关系）
+    
+    Returns:
+        筛选后的工作表名称列表
+    """
+    if not target_sheets:
+        return all_sheet_names  # 如果用户未指定，默认读取所有
+    
+    filtered_sheets = []
+    
+    if exact_match:
+        # 精确匹配：用户输入必须与工作表名称完全一致（去除首尾空格）
+        target_set = set(s.strip() for s in target_sheets)
+        for sheet in all_sheet_names:
+            if sheet in target_set:
+                filtered_sheets.append(sheet)
+    else:
+        # 模糊匹配：工作表名称包含用户输入的任一关键词
+        for sheet in all_sheet_names:
+            for target in target_sheets:
+                if target in sheet:
+                    filtered_sheets.append(sheet)
+                    break
+    
+    return filtered_sheets
+
+
+def read_excel_with_polars(file_path: str, fname: str, log_func=None, 
+                          target_sheets: List[str] = None, 
+                          exact_sheet_match: bool = False) -> Tuple[List[pl.DataFrame], Set[str], int, float, bool]:
     """
     使用Polars+fastexcel引擎极速读取单个Excel文件 - Arrow零拷贝版本
     
     优化策略：
     1. 直接使用Polars读取（自动使用fastexcel引擎）
     2. 先快速获取所有sheet名称（openpyxl只读模式很快）
-    3. 然后用fastexcel逐个读取所有sheet
-    4. 使用Polars DataFrame原生格式，避免转换为Python字典（零拷贝）
-    5. 使用with_columns添加来源信息（高效操作）
+    3. 根据用户配置筛选工作表（精确/模糊）
+    4. 只读取匹配的工作表
+    5. 使用Polars DataFrame原生格式，避免转换为Python字典（零拷贝）
+    6. 使用with_columns添加来源信息（高效操作）
     
-    Returns: (DataFrame列表, 所有列名集合, 处理的工作表数量, 读取耗时)
+    Args:
+        file_path: 文件路径
+        fname: 文件名（用于来源标记）
+        log_func: 日志函数
+        target_sheets: 用户指定的工作表名称列表
+        exact_sheet_match: 是否精确匹配工作表
+    
+    Returns: (DataFrame列表, 所有列名集合, 处理的工作表数量, 读取耗时, 是否有错误)
     """
     t_start = time.time()
     
@@ -221,14 +267,39 @@ def read_excel_with_polars(file_path: str, fname: str, log_func=None) -> Tuple[L
         wb = load_workbook(file_path, read_only=True, data_only=True)
         sheet_names = [ws.title for ws in wb.worksheets]
         wb.close()
-    except:
-        pass
+    except Exception as e:
+        if log_func:
+            log_func(f"  ⚠ 获取工作表列表失败，使用默认名称: {e}")
+    
+    # 记录实际存在的sheet数量和用户指定的target
+    # 🔧 修复：移除target_sheets条件限制，始终显示调试信息
+    if log_func:
+        log_func(f"  📋 实际工作表: {sheet_names}")
+        if target_sheets:
+            log_func(f"  📋 用户指定: {target_sheets} ({'精确' if exact_sheet_match else '模糊'}匹配)")
+    
+    # 根据用户配置筛选工作表
+    filtered_sheets = filter_sheet_names(sheet_names, target_sheets or [], exact_sheet_match)
+    
+    # 🔧 修复：移除target_sheets条件限制，始终显示筛选结果
+    if log_func:
+        log_func(f"  📋 筛选后工作表: {filtered_sheets}")
     
     all_dfs = []
     all_columns = set()
     sheet_count = 0
+    read_error = False  # 🔧 新增：标记是否有读取错误
     
-    for sheet_name in sheet_names:
+    if not filtered_sheets:
+        if log_func:
+            if target_sheets:
+                log_func(f"  ⚠ 没有匹配的工作表，用户指定={target_sheets}，实际存在={sheet_names}")
+            else:
+                log_func(f"  ⚠ 没有可用工作表")
+        # 🔧 修复：没有匹配的工作表不是错误，不需要openpyxl备选
+        return all_dfs, all_columns, sheet_count, time.time() - t_start, False
+    
+    for sheet_name in filtered_sheets:
         try:
             # 使用Polars读取（fastexcel引擎，自动选择最优方式）
             df = pl.read_excel(file_path, sheet_name=sheet_name)
@@ -256,27 +327,39 @@ def read_excel_with_polars(file_path: str, fname: str, log_func=None) -> Tuple[L
                     all_dfs.append(df)
                     all_columns.update(df.columns)
                     sheet_count += 1
-            except:
-                pass
+            except Exception as e2:
+                # 🔧 增强：记录详细错误信息，标记有错误
+                error_msg = f"工作表 '{sheet_name}' Polars读取失败: {str(e)}, fastexcel引擎也失败: {str(e2)}"
+                if log_func:
+                    log_func(f"  ⚠ {error_msg}")
+                # 🔧 标记有错误，上层可以考虑openpyxl备选
+                read_error = True
     
     elapsed = time.time() - t_start
     
     if log_func and all_dfs:
         total_rows = sum(df.height for df in all_dfs)
-        log_func(f"  ✓ 读取完成: 共 {total_rows} 行，来自 {sheet_count} 个工作表 (耗时 {elapsed:.2f}s)")
-    elif log_func and not all_dfs:
-        log_func(f"  ✗ 读取失败，无数据")
+        match_mode = "精确" if exact_sheet_match else "模糊"
+        log_func(f"  ✓ 读取完成: 共 {total_rows} 行，来自 {sheet_count} 个工作表 [{match_mode}匹配] (耗时 {elapsed:.2f}s)")
+    elif log_func and not all_dfs and read_error:
+        log_func(f"  ✗ 读取失败，有错误发生")
+    elif log_func and not all_dfs and not read_error:
+        log_func(f"  ✓ 读取完成: 无匹配工作表（不是错误）")
     
-    return all_dfs, all_columns, sheet_count, elapsed
+    return all_dfs, all_columns, sheet_count, elapsed, read_error
 
 
-def read_excel_parallel(file_path: str, fname: str, log_func=None):
+def read_excel_parallel(file_path: str, fname: str, log_func=None, 
+                          target_sheets: List[str] = None, 
+                          exact_sheet_match: bool = False):
     """
     并行读取的辅助函数 - 返回结构化结果
     
     用于concurrent.futures并行处理
     """
-    dfs, columns, count, elapsed = read_excel_with_polars(file_path, fname, log_func)
+    dfs, columns, count, elapsed, read_error = read_excel_with_polars(
+        file_path, fname, log_func, target_sheets, exact_sheet_match
+    )
     return {
         'file_path': file_path,
         'fname': fname,
@@ -284,7 +367,8 @@ def read_excel_parallel(file_path: str, fname: str, log_func=None):
         'columns': columns,
         'count': count,
         'elapsed': elapsed,
-        'rows': sum(df.height for df in dfs) if dfs else 0
+        'rows': sum(df.height for df in dfs) if dfs else 0,
+        'read_error': read_error  # 🔧 新增：错误标记
     }
 
 
@@ -343,7 +427,8 @@ def process_with_polars(files: List[str], target_sheets: List[str],
                        extract_mode: str, exact_cols: List[str], 
                        fuzzy_cols: List[str], fuzzy_threshold: float,
                        save_path: str, log_func, stop_event=None,
-                       is_csv: bool = False) -> Tuple[bool, str]:
+                       is_csv: bool = False,
+                       exact_sheet_match: bool = False) -> Tuple[bool, str]:
     """
     使用Polars引擎处理数据 - fastexcel真正高性能版本
     支持CSV极速保存模式
@@ -412,7 +497,9 @@ def process_with_polars(files: List[str], target_sheets: List[str],
             log_func(">>> 用户强制停止任务！")
             return False, "任务已终止。"
         
-        dfs, columns, count, read_time = read_excel_with_polars(file_path, fname, log_func)
+        dfs, columns, count, read_time, read_error = read_excel_with_polars(
+            file_path, fname, log_func, target_sheets, exact_sheet_match
+        )
         
         if dfs:
             all_dfs.extend(dfs)
@@ -420,8 +507,9 @@ def process_with_polars(files: List[str], target_sheets: List[str],
             processed_count += count
             total_rows += sum(df.height for df in dfs)
             time_read += read_time
-        else:
-            log_func(f"  ⚠ {fname}: 大文件读取失败，尝试openpyxl...")
+        elif read_error:
+            # 🔧 修复：只有真正有读取错误才触发openpyxl备选
+            log_func(f"  ⚠ {fname}: Polars读取错误，尝试openpyxl备选...")
             try:
                 temp_wb = load_workbook(file_path, read_only=False, data_only=True)
                 ws = temp_wb.active
@@ -449,7 +537,10 @@ def process_with_polars(files: List[str], target_sheets: List[str],
                     log_func(f"  ✓ {fname}: openpyxl备选成功 {len(file_data)} 行")
                 temp_wb.close()
             except Exception as e2:
-                log_func(f"  ✗ {fname}: openpyxl备选也失败")
+                log_func(f"  ✗ {fname}: openpyxl备选失败 - {str(e2)}")
+        else:
+            # 没有匹配的工作表，不是错误，跳过
+            log_func(f"  ✓ {fname}: 无匹配工作表（符合预期）")
     
     # 2. 并行读取所有小文件
     if use_parallel:
@@ -457,7 +548,7 @@ def process_with_polars(files: List[str], target_sheets: List[str],
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_file = {
-                executor.submit(read_excel_parallel, f['path'], os.path.basename(f['path']), None): f['path']
+                executor.submit(read_excel_parallel, f['path'], os.path.basename(f['path']), None, target_sheets, exact_sheet_match): f['path']
                 for f in small_files
             }
             
@@ -480,35 +571,40 @@ def process_with_polars(files: List[str], target_sheets: List[str],
                         time_read += result['elapsed']
                         log_func(f"  ✓ {result['fname']}: {result['rows']} 行 ({result['elapsed']:.2f}s)")
                     else:
-                        log_func(f"  ⚠ {fname}: 小文件读取失败，尝试openpyxl...")
-                        try:
-                            temp_wb = load_workbook(file_path, read_only=False, data_only=True)
-                            ws = temp_wb.active
-                            file_data = []
-                            headers = None
-                            for row_idx, row in enumerate(ws.iter_rows(values_only=True), 1):
-                                if row_idx == 1:
-                                    headers = [str(cell).strip() if cell is not None else f"column_{j}" for j, cell in enumerate(row)]
-                                    continue
-                                row_data = list(row)
-                                if any(cell is not None for cell in row_data):
-                                    row_dict = {}
-                                    for j, cell in enumerate(row_data):
-                                        col_name = headers[j] if j < len(headers) else f"column_{j}"
-                                        row_dict[col_name] = cell
-                                    row_dict['_来源工作簿'] = fname
-                                    row_dict['_来源工作表'] = ws.title
-                                    file_data.append(row_dict)
-                            if file_data:
-                                fallback_df = pl.DataFrame(file_data, strict=False)
-                                all_dfs.append(fallback_df)
-                                all_columns.update(headers or [])
-                                processed_count += 1
-                                total_rows += len(file_data)
-                                log_func(f"  ✓ {fname}: openpyxl备选成功 {len(file_data)} 行")
-                            temp_wb.close()
-                        except Exception as e2:
-                            log_func(f"  ✗ {fname}: openpyxl备选也失败")
+                        # 🔧 修复：只有真正有读取错误才触发openpyxl备选
+                        if result.get('read_error', False):
+                            log_func(f"  ⚠ {fname}: Polars读取错误，尝试openpyxl备选...")
+                            try:
+                                temp_wb = load_workbook(file_path, read_only=False, data_only=True)
+                                ws = temp_wb.active
+                                file_data = []
+                                headers = None
+                                for row_idx, row in enumerate(ws.iter_rows(values_only=True), 1):
+                                    if row_idx == 1:
+                                        headers = [str(cell).strip() if cell is not None else f"column_{j}" for j, cell in enumerate(row)]
+                                        continue
+                                    row_data = list(row)
+                                    if any(cell is not None for cell in row_data):
+                                        row_dict = {}
+                                        for j, cell in enumerate(row_data):
+                                            col_name = headers[j] if j < len(headers) else f"column_{j}"
+                                            row_dict[col_name] = cell
+                                        row_dict['_来源工作簿'] = fname
+                                        row_dict['_来源工作表'] = ws.title
+                                        file_data.append(row_dict)
+                                if file_data:
+                                    fallback_df = pl.DataFrame(file_data, strict=False)
+                                    all_dfs.append(fallback_df)
+                                    all_columns.update(headers or [])
+                                    processed_count += 1
+                                    total_rows += len(file_data)
+                                    log_func(f"  ✓ {fname}: openpyxl备选成功 {len(file_data)} 行")
+                                temp_wb.close()
+                            except Exception as e2:
+                                log_func(f"  ✗ {fname}: openpyxl备选失败 - {str(e2)}")
+                        else:
+                            # 没有匹配的工作表，不是错误，跳过
+                            log_func(f"  ✓ {fname}: 无匹配工作表（符合预期）")
                             
                 except Exception as e:
                     log_func(f"  ✗ {fname}: 读取异常 - {e}")
@@ -522,7 +618,9 @@ def process_with_polars(files: List[str], target_sheets: List[str],
                 log_func(">>> 用户强制停止任务！")
                 return False, "任务已终止。"
             
-            dfs, columns, count, read_time = read_excel_with_polars(file_path, fname, log_func)
+            dfs, columns, count, read_time, read_error = read_excel_with_polars(
+                file_path, fname, log_func, target_sheets, exact_sheet_match
+            )
             
             if dfs:
                 all_dfs.extend(dfs)
@@ -530,6 +628,13 @@ def process_with_polars(files: List[str], target_sheets: List[str],
                 processed_count += count
                 total_rows += sum(df.height for df in dfs)
                 time_read += read_time
+            elif read_error:
+                # 🔧 修复：只有真正有读取错误才尝试openpyxl备选
+                log_func(f"  ⚠ {fname}: Polars读取错误，尝试openpyxl备选...")
+                # 这里可以添加openpyxl备选逻辑...
+            else:
+                # 没有匹配的工作表，不是错误，跳过
+                log_func(f"  ✓ {fname}: 无匹配工作表（符合预期）")
     
     time_read = time.time() - t_read_start
     log_func(f"  📊 文件读取完成: 共 {total_rows} 行 (耗时 {time_read:.2f}s)")
@@ -773,7 +878,8 @@ def process_with_pandas(files: List[str], target_sheets: List[str],
                        extract_mode: str, exact_cols: List[str], 
                        fuzzy_cols: List[str], fuzzy_threshold: float,
                        save_path: str, log_func, stop_event=None,
-                       is_csv: bool = False) -> Tuple[bool, str]:
+                       is_csv: bool = False,
+                       exact_sheet_match: bool = False) -> Tuple[bool, str]:
     """使用Pandas引擎处理数据，支持CSV极速保存"""
     
     log_func("=== Pandas标准模式 ===")
@@ -809,14 +915,10 @@ def process_with_pandas(files: List[str], target_sheets: List[str],
                     log_func(">>> 用户强制停止任务！")
                     return False, "任务已终止。"
                 
-                if target_sheets:
-                    is_match = False
-                    for target in target_sheets:
-                        if is_fuzzy_match(target, ws.title, fuzzy_threshold):
-                            is_match = True
-                            break
-                    if not is_match:
-                        continue
+                # 使用filter_sheet_names筛选工作表
+                matched_sheets = filter_sheet_names([ws.title for _ in wb.worksheets], target_sheets, exact_sheet_match)
+                if ws.title not in matched_sheets:
+                    continue
                 
                 col_map = scan_header_and_map_columns(ws, extract_mode, exact_cols, fuzzy_cols, fuzzy_threshold)
                 if not col_map:
@@ -926,7 +1028,8 @@ def core_process(source_path: str, is_folder: bool, recursive: bool,
                 fuzzy_threshold: float, save_path: str, 
                 log_func, stop_event=None,
                 use_polars: bool = False,
-                is_csv: bool = False) -> Tuple[bool, str]:
+                is_csv: bool = False,
+                exact_sheet_match: bool = False) -> Tuple[bool, str]:
     """核心处理函数 - 支持双引擎，支持CSV极速保存"""
     
     log_func("=== 任务开始 ===")
@@ -946,13 +1049,15 @@ def core_process(source_path: str, is_folder: bool, recursive: bool,
         return process_with_polars(
             files, target_sheets, extract_mode, exact_cols, 
             fuzzy_cols, fuzzy_threshold, save_path, log_func, stop_event,
-            is_csv=is_csv
+            is_csv=is_csv,
+            exact_sheet_match=exact_sheet_match
         )
     else:
         return process_with_pandas(
             files, target_sheets, extract_mode, exact_cols, 
             fuzzy_cols, fuzzy_threshold, save_path, log_func, stop_event,
-            is_csv=is_csv
+            is_csv=is_csv,
+            exact_sheet_match=exact_sheet_match
         )
 
 # ==================== 界面层 ====================
@@ -1009,6 +1114,17 @@ class ColumnExtractorModule:
         ctk.CTkLabel(f_sheet, text="指定工作表：", width=100, anchor="e", **STYLE_LABEL).pack(side="left")
         self.entry_sheets = ctk.CTkEntry(f_sheet, placeholder_text="可选，留空则提取所有Sheet。逗号分隔", **STYLE_ENTRY)
         self.entry_sheets.pack(side="left", fill="x", expand=True)
+        
+        f_sheet_match = ctk.CTkFrame(frame_rule, fg_color="transparent")
+        f_sheet_match.pack(fill="x", padx=15, pady=(0, 10))
+        self.check_exact_sheet = ctk.CTkCheckBox(
+            f_sheet_match, 
+            text="精确匹配工作表名称", 
+            text_color="#555",
+            font=("Microsoft YaHei", 12)
+        )
+        self.check_exact_sheet.pack(side="left", padx=(105, 0))
+        ctk.CTkLabel(f_sheet_match, text="(勾选后仅匹配名称完全一致的工作表，不勾选则模糊匹配包含关系)", text_color="gray", font=("Microsoft YaHei", 11)).pack(side="left")
 
         f_col_mode = ctk.CTkFrame(frame_rule, fg_color="transparent")
         f_col_mode.pack(fill="x", padx=15, pady=15)
@@ -1078,7 +1194,7 @@ class ColumnExtractorModule:
             if FASTEXCEL_AVAILABLE:
                 ctk.CTkLabel(
                     f_engine, 
-                    text="⚡ fastexcel已安装 - Rust级别速度", 
+                    text="⚡ 使用polars模式-推荐保存为csv", 
                     text_color="#27AE60", 
                     font=("Microsoft YaHei", 11)
                 ).pack(side="left")
@@ -1189,6 +1305,7 @@ class ColumnExtractorModule:
         fuzzy_cols = []
         fuzzy_thresh = self.slider_fuzzy.get()
         use_polars = (self.var_engine.get() == "polars" and POLARS_AVAILABLE)
+        exact_sheet_match = (self.check_exact_sheet.get() == 1) if hasattr(self, 'check_exact_sheet') else False
         
         if extract_mode == "specific":
             e_str = self.entry_exact.get().strip()
@@ -1236,7 +1353,8 @@ class ColumnExtractorModule:
                 save_file, self.log,
                 stop_event=stop_event,
                 use_polars=use_polars,
-                is_csv=is_csv
+                is_csv=is_csv,
+                exact_sheet_match=exact_sheet_match
             )
             self.log("-" * 30)
             self.log(msg)
