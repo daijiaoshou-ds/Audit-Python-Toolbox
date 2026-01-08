@@ -38,7 +38,7 @@ class App(ctk.CTk):
         super().__init__()
 
         # --- 窗口基础设置 ---
-        self.title("Python工具箱")
+        self.title("基米工具箱 v0.3")
         self.geometry("900x600") 
         self.minsize(900, 600)
 

@@ -4,7 +4,7 @@ import shutil
 import time
 
 def build():
-    exe_name = "Python工具箱"
+    exe_name = "基米工具箱"
     
     # 获取路径
     project_root = os.path.abspath(".")

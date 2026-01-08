@@ -37,3 +37,9 @@ test.py
 
 # --- 5. 文档文件 ---
 imports_analysis.md
+
+# 忽略图标制作文件
+make_icon.py
+
+# 忽略setup文件
+build_setup.iss
