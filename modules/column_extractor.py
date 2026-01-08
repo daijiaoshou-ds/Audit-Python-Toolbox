@@ -728,22 +728,24 @@ def process_with_polars(files: List[str], target_sheets: List[str],
             source_cols = [c for c in pandas_df.columns if c not in ['_来源工作簿', '_来源工作表']]
             
             if extract_mode == 'specific':
+                # 🔧 修复：先精确匹配，再模糊匹配（分开处理，避免混淆）
                 valid_cols = []
+                
+                # 1. 先做精确匹配（针对 exact_cols）
                 for exact in exact_cols:
-                    found = False
                     for col in source_cols:
-                        if exact.lower() == col.lower():
-                            if col not in valid_cols:
-                                valid_cols.append(col)
-                            found = True
+                        if exact.lower() == col.lower() and col not in valid_cols:
+                            valid_cols.append(col)
                             break
-                        if not found and is_fuzzy_match(exact, col, fuzzy_threshold):
-                            if col not in valid_cols:
-                                valid_cols.append(col)
-                            found = True
+                
+                # 2. 再做模糊匹配（针对 fuzzy_cols，跳过已精确匹配的列）
+                for fuzzy in fuzzy_cols:
+                    for col in source_cols:
+                        if col not in valid_cols and is_fuzzy_match(fuzzy, col, fuzzy_threshold):
+                            valid_cols.append(col)
                             break
-                remaining = [c for c in source_cols if c not in valid_cols]
-                final_cols = valid_cols + remaining
+                
+                final_cols = valid_cols
             else:
                 final_cols = source_cols
             
@@ -761,28 +763,34 @@ def process_with_polars(files: List[str], target_sheets: List[str],
             source_cols = [c for c in combined_df.columns if c not in ['_来源工作簿', '_来源工作表']]
             
             if extract_mode == 'specific':
+                # 🔧 修复：先精确匹配，再模糊匹配（分开处理，避免混淆）
                 valid_cols = []
+                
+                # 1. 先做精确匹配（针对 exact_cols）
                 for exact in exact_cols:
-                    found = False
                     for col in source_cols:
-                        if exact.lower() == col.lower():
-                            if col not in valid_cols:
-                                valid_cols.append(col)
-                            found = True
+                        if exact.lower() == col.lower() and col not in valid_cols:
+                            valid_cols.append(col)
                             break
-                        if not found and is_fuzzy_match(exact, col, fuzzy_threshold):
-                            if col not in valid_cols:
-                                valid_cols.append(col)
-                            found = True
+                
+                # 2. 再做模糊匹配（针对 fuzzy_cols，跳过已精确匹配的列）
+                for fuzzy in fuzzy_cols:
+                    for col in source_cols:
+                        if col not in valid_cols and is_fuzzy_match(fuzzy, col, fuzzy_threshold):
+                            valid_cols.append(col)
                             break
-                remaining = [c for c in source_cols if c not in valid_cols]
-                final_cols = valid_cols + remaining
+                
+                final_cols = valid_cols
             else:
                 final_cols = source_cols
             
             final_cols = final_cols + ['_来源工作簿', '_来源工作表']
             final_cols = [c for c in final_cols if c in combined_df.columns]
             final_df = combined_df.select(final_cols)
+            
+            # 🔧 修复：当 extract_mode != 'specific' 时不筛选
+            filtered_count = len(valid_cols) if extract_mode == 'specific' else len(source_cols)
+            log_func(f"  ✓ 列筛选完成: 从 {len(source_cols)} 列筛选到 {filtered_count} 列")
             
             # ========== 保存数据 ==========
             t_save_start = time.time()
@@ -813,22 +821,24 @@ def process_with_polars(files: List[str], target_sheets: List[str],
             source_cols = [c for c in combined_df.columns if c not in ['_来源工作簿', '_来源工作表']]
             
             if extract_mode == 'specific':
+                # 🔧 修复：先精确匹配，再模糊匹配（分开处理，避免混淆）
                 valid_cols = []
+                
+                # 1. 先做精确匹配（针对 exact_cols）
                 for exact in exact_cols:
-                    found = False
                     for col in source_cols:
-                        if exact.lower() == col.lower():
-                            if col not in valid_cols:
-                                valid_cols.append(col)
-                            found = True
+                        if exact.lower() == col.lower() and col not in valid_cols:
+                            valid_cols.append(col)
                             break
-                        if not found and is_fuzzy_match(exact, col, fuzzy_threshold):
-                            if col not in valid_cols:
-                                valid_cols.append(col)
-                            found = True
+                
+                # 2. 再做模糊匹配（针对 fuzzy_cols，跳过已精确匹配的列）
+                for fuzzy in fuzzy_cols:
+                    for col in source_cols:
+                        if col not in valid_cols and is_fuzzy_match(fuzzy, col, fuzzy_threshold):
+                            valid_cols.append(col)
                             break
-                remaining = [c for c in source_cols if c not in valid_cols]
-                final_cols = valid_cols + remaining
+                
+                final_cols = valid_cols
             else:
                 final_cols = source_cols
             
@@ -1194,7 +1204,7 @@ class ColumnExtractorModule:
             if FASTEXCEL_AVAILABLE:
                 ctk.CTkLabel(
                     f_engine, 
-                    text="⚡ 使用polars模式-推荐保存为csv", 
+                    text="⚡ polars模式-推荐保存为csv", 
                     text_color="#27AE60", 
                     font=("Microsoft YaHei", 11)
                 ).pack(side="left")
