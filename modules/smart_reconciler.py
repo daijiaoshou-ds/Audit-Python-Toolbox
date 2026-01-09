@@ -17,21 +17,21 @@ import uuid
 warnings.filterwarnings("ignore", category=UserWarning, module="pandas")
 
 # --- 科学计算库 ---
-try:
-    from scipy.optimize import linear_sum_assignment
-    HAS_SCIPY = True
-except ImportError:
-    HAS_SCIPY = False
+# try:
+#     from scipy.optimize import linear_sum_assignment
+#     HAS_SCIPY = True
+# except ImportError:
+#     HAS_SCIPY = False
 
 # --- 资源路径 ---
 from modules.path_manager import get_asset_path
 
 # --- AI 库 ---
-try:
-    from sentence_transformers import SentenceTransformer, util
-    HAS_AI = True
-except ImportError:
-    HAS_AI = False
+# try:
+#     from sentence_transformers import SentenceTransformer, util
+#     HAS_AI = True
+# except ImportError:
+#     HAS_AI = False
 
 # ==================== 核心逻辑引擎 (Backend) ====================
 
@@ -47,7 +47,11 @@ class ReconcilerEngine:
         self.bank_files_info = [] 
 
     def load_ai_model(self):
-        if not HAS_AI: return
+        # === 【新增】函数内部导入 ===
+        import os
+        from sentence_transformers import SentenceTransformer, util
+
+        # if not HAS_AI: return
         if self.model: return
         if os.path.exists(self.model_path):
             try:
@@ -226,6 +230,9 @@ class ReconcilerEngine:
         return difflib.SequenceMatcher(None, na, nb).ratio() >= threshold
 
     def execute_reconciliation(self, mapping_dict, gl_cfg, bank_cfgs, output_path, strategy_cfg, stop_event=None):
+        
+        from scipy.optimize import linear_sum_assignment
+
         writer = pd.ExcelWriter(output_path, engine='openpyxl')
         summary_data = []
         name_threshold = strategy_cfg.get('name_threshold', 0.3)
