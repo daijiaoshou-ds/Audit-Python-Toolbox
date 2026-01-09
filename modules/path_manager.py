@@ -10,6 +10,7 @@ def get_app_root():
     else:
         return os.path.abspath(".")
 
+# 已经废弃，使用 get_app_root 代替
 def get_internal_root():
     """获取程序内部临时目录 (PyInstaller 解压目录)"""
     try:
@@ -41,7 +42,7 @@ def get_asset_path(relative_path):
     """
     获取打包进 EXE 的资源 (assets/fonts, assets/icon.ico)
     """
-    return os.path.join(get_internal_root(), relative_path)
+    return os.path.join(get_app_root(), relative_path)
 
 # ==================== 3. AI 模型资源 (只读/外部挂载) ====================
 # NLP模型、U2Net模型 太大，不打包，放在 EXE 旁边的 assets 文件夹里

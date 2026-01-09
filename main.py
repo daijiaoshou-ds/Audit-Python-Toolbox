@@ -24,6 +24,15 @@ import threading
 # --- 引入图标模块 ---
 from modules.path_manager import get_asset_path 
 
+# ==================== 【关键修复】高清图标补丁 ====================
+try:
+    if getattr(sys, 'frozen', False):  # 只有打包后才执行
+        # 程序唯一身份ID
+        myappid = 'daijiaoshou.hajimitool.pro.v0.3' 
+        windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+except Exception:
+    pass
+
 # --- DPI适配 ---
 try:
     windll.shcore.SetProcessDpiAwareness(1)
@@ -60,13 +69,70 @@ class App(ctk.CTk):
         self.geometry("900x600") 
         self.minsize(900, 600)
 
-        # --- 图标设置 ---
+        # ==================== 【终极融合版】高清图标加载 ====================
         try:
-            icon_path = get_asset_path(os.path.join("assets", "icon.ico"))
+            # --- 第一步：精准定位路径 (融合方案 A) ---
+            if getattr(sys, 'frozen', False):
+                # 打包模式 (onedir)：基准是 EXE 所在目录
+                base_dir = os.path.dirname(sys.executable)
+            else:
+                # 开发模式：基准是当前代码目录
+                base_dir = os.path.abspath(".")
+            
+            # 拼接得到绝对路径
+            icon_path = os.path.join(base_dir, "assets", "icon.ico")
+            
+            # 再次确认文件存在 (双重保险)
+            if not os.path.exists(icon_path):
+                # 如果找不到，尝试回退到 _MEIPASS (兼容 onefile 模式)
+                try:
+                    icon_path = os.path.join(sys._MEIPASS, "assets", "icon.ico")
+                except:
+                    pass
+
+            # --- 第二步：强制高清渲染 (融合方案 B) ---
             if os.path.exists(icon_path):
+                # 1. 常规设置 (保底，防止 Win32 失败)
                 self.iconbitmap(icon_path)
-        except Exception:
-            pass
+                
+                # 2. Win32 API 强制覆盖 (解决模糊)
+                if sys.platform.startswith("win"):
+                    try:
+                        user32 = windll.user32
+                        hwnd = windll.user32.GetParent(self.winfo_id())
+                        
+                        # 加载大图标 (256x256) -> 解决 Alt+Tab 和大图标模糊
+                        h_icon_big = user32.LoadImageW(
+                            None, 
+                            os.path.abspath(icon_path), 
+                            1, # IMAGE_ICON
+                            256, 256, 
+                            0x00000010 # LR_LOADFROMFILE
+                        )
+                        
+                        # 加载小图标 (48x48) -> 解决任务栏和标题栏模糊
+                        h_icon_small = user32.LoadImageW(
+                            None, 
+                            os.path.abspath(icon_path), 
+                            1, 
+                            48, 48, 
+                            0x00000010
+                        )
+
+                        if h_icon_big:
+                            # 1 = ICON_BIG
+                            user32.SendMessageW(hwnd, 0x0080, 1, h_icon_big)
+                        if h_icon_small:
+                            # 0 = ICON_SMALL
+                            user32.SendMessageW(hwnd, 0x0080, 0, h_icon_small)
+                    except Exception as win32_err:
+                        print(f"Win32 Icon Error: {win32_err}")
+            else:
+                print(f"Icon not found at: {icon_path}")
+
+        except Exception as e:
+            print(f"Icon load failed: {e}")
+        # ==============================================================
 
         # --- 布局容器 (解决卡顿) ---
         self.paned_window = tk.PanedWindow(
@@ -135,6 +201,17 @@ class App(ctk.CTk):
         if index not in self.module_instances:
             config = MODULE_REGISTRY[index]
             import importlib
+            
+            # === 【新增】处理 PyInstaller 单文件打包的路径问题 ===
+            import sys
+            import os
+            if hasattr(sys, '_MEIPASS'):
+                # 单文件模式：将临时解压目录添加到 sys.path
+                meipass = sys._MEIPASS
+                module_parent = os.path.join(meipass, 'modules')
+                if module_parent not in sys.path:
+                    sys.path.insert(0, module_parent)
+            # ==================================================
             
             # 动态导入模块
             module = importlib.import_module(config["import_path"])

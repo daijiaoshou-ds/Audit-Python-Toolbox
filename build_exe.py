@@ -5,51 +5,37 @@ import time
 
 def build():
     exe_name = "基米工具箱"
-    
-    # 获取路径
     project_root = os.path.abspath(".")
+    
+    # 定义输出目录
     dist_dir = os.path.join(project_root, "dist")
     build_dir = os.path.join(project_root, "build")
     spec_file = os.path.join(project_root, f"{exe_name}.spec")
     
-    # 目标 EXE 在 dist 里的路径
-    src_exe = os.path.join(dist_dir, f"{exe_name}.exe")
-    # 最终 EXE 要放的根目录路径
-    dst_exe = os.path.join(project_root, f"{exe_name}.exe")
+    # 最终文件夹路径
+    output_folder = os.path.join(dist_dir, exe_name) 
 
-    # 1. 清理旧构建 & 旧 EXE
-    print("🧹 正在清理旧文件...")
+    print("🧹 清理旧构建...")
     if os.path.exists(build_dir): shutil.rmtree(build_dir)
     if os.path.exists(dist_dir): shutil.rmtree(dist_dir)
     if os.path.exists(spec_file): os.remove(spec_file)
     if os.path.exists("ExcelToolsPro.spec"): os.remove("ExcelToolsPro.spec")
-    
-    # 如果根目录下已经有一个旧的 EXE，先删掉，防止覆盖报错
-    if os.path.exists(dst_exe):
-        try:
-            os.remove(dst_exe)
-            print(f"   已删除根目录下的旧版本: {exe_name}.exe")
-        except Exception as e:
-            print(f"❌ 无法删除旧 EXE (可能正在运行?): {e}")
-            return
 
-    print(f"🚀 开始打包: {exe_name} ...")
-    print("⏳ 请耐心等待，NLP 依赖较多...")
+    print(f"🚀 开始打包 (文件夹模式): {exe_name} ...")
 
     params = [
         'main.py',
         f'--name={exe_name}',
-        '--onefile',
+        '--onedir',            # <--- 【核心修改】由 --onefile 改为 --onedir
         '--noconsole',
         '--clean',
         '--icon=assets/icon.ico',
         '--noupx',
         
-        # 资源文件 (只打包小的)
-         '--add-data=assets/fonts/simsun.ttc;assets/fonts', 
-        '--add-data=assets/icon.ico;assets',    
+        # 资源文件 (modules 必须打包进去)
+        '--add-data=modules;modules', 
         
-        # 依赖收集
+        # ... (以下所有依赖收集 collect-all 和 hidden-import 保持完全不变) ...
         '--collect-all=customtkinter',
         '--collect-all=rembg',
         '--collect-all=onnxruntime',
@@ -60,52 +46,87 @@ def build():
         '--collect-all=torch',
         '--collect-all=sentence_transformers',
         '--collect-all=jieba',
-        # === 【新增】Scipy 相关 (匈牙利算法必须) ===
         '--collect-all=scipy', 
-        '--collect-all=polars',      # 【新增】Polars引擎
-        '--collect-all=pyarrow',     # 【新增】Polars转换依赖
-        # --- 隐式导入 ---
+        '--collect-all=polars',
+        '--collect-all=pyarrow',
+        
+        '--hidden-import=numpy',
+        '--hidden-import=pandas',
+        '--hidden-import=openpyxl',
+        '--hidden-import=csv',
+        '--hidden-import=json',
+        '--hidden-import=difflib',
+        '--hidden-import=re',
+        '--hidden-import=hashlib',
+        '--hidden-import=uuid',
+        '--hidden-import=openai',
+        '--hidden-import=tiktoken',
+        '--hidden-import=torch',
+        '--hidden-import=sklearn',
+        '--hidden-import=sentence_transformers',
+        '--hidden-import=huggingface_hub',
+        '--hidden-import=PIL',
         '--hidden-import=PIL._tkinter_finder',
+        '--hidden-import=rembg',
+        '--hidden-import=onnxruntime',
+        '--hidden-import=fitz',
+        '--hidden-import=pdfplumber',
+        '--hidden-import=reportlab',
+        '--hidden-import=docx',
+        '--hidden-import=docx2pdf',
+        '--hidden-import=python_calamine',  
+        '--hidden-import=xlrd',
+        '--hidden-import=xlwt',
+        '--hidden-import=xlsxwriter',
+        '--hidden-import=fastexcel',
+        '--hidden-import=threading',
+        '--hidden-import=concurrent.futures',
+        '--hidden-import=win32com',
+        '--hidden-import=win32com.client',
+        '--hidden-import=pythoncom',
+        '--hidden-import=pydantic',
         '--hidden-import=pydantic.deprecated.decorator',
         '--hidden-import=sklearn.utils._typedefs',
         '--hidden-import=sklearn.neighbors._partition_nodes',
         '--hidden-import=sklearn.tree',
         '--hidden-import=sklearn.ensemble',
-        '--hidden-import=sentence_transformers',
-        '--hidden-import=huggingface_hub',
-        # === 【新增】Scipy 隐式导入 ===
         '--hidden-import=scipy.special.cython_special',
         '--hidden-import=scipy.spatial.transform._rotation_groups',
+        '--hidden-import=scipy.optimize',
     ]
 
-    try:
-        PyInstaller.__main__.run(params)
-    except Exception as e:
-        print(f"\n❌ 打包失败: {e}")
-        return
+    PyInstaller.__main__.run(params)
 
-    print("\n📦 打包完成，正在执行自动化部署...")
+    print("\n📦 打包完成，正在组装最终文件夹...")
 
-    # === 【核心修改】自动搬运 EXE 到根目录 ===
-    if os.path.exists(src_exe):
-        # 1. 移动文件
-        shutil.move(src_exe, dst_exe)
-        print(f"✅ 成功！已将 EXE 移动到项目根目录: \n   -> {dst_exe}")
+    # === 组装最终交付文件夹 ===
+    # 目标结构:
+    # dist/基米工具箱/
+    #   ├── 基米工具箱.exe
+    #   ├── assets/  <-- 我们手动拷进去
+    #   └── _internal/ (依赖库)
+
+    if os.path.exists(output_folder):
+        # 1. 复制 assets 文件夹进去
+        print("   正在复制资源文件 (assets)...")
+        dest_assets = os.path.join(output_folder, "assets")
+        if os.path.exists("assets"):
+            # 如果目标存在先删再拷
+            if os.path.exists(dest_assets): shutil.rmtree(dest_assets)
+            shutil.copytree("assets", dest_assets)
         
-        # 2. 清理 dist 和 build 文件夹 (强迫症福音)
-        time.sleep(1) # 等待文件句柄释放
-        if os.path.exists(dist_dir): shutil.rmtree(dist_dir)
-        if os.path.exists(build_dir): shutil.rmtree(build_dir)
-        if os.path.exists(spec_file): os.remove(spec_file)
-        print("🧹 已清理临时构建文件 (dist/build/spec)")
-        
+        # 2. (可选) 复制 user_data 进去
+        # dest_user = os.path.join(output_folder, "user_data")
+        # if not os.path.exists(dest_user): os.makedirs(dest_user)
+
         print("\n" + "="*50)
         print("🎉 全部搞定！")
-        print("现在直接在根目录下双击【Python工具箱.exe】即可运行。")
-        print("它会自动加载旁边的 assets 文件夹和 user_data 配置。")
+        print(f"请查看文件夹: {output_folder}")
+        print("直接把这个【基米工具箱】文件夹发给同事即可！")
         print("="*50)
-    else:
-        print("❌ 错误：在 dist 中未找到生成的 EXE，打包可能未成功。")
+        
+        # 自动打开文件夹
+        os.startfile(dist_dir)
 
 if __name__ == "__main__":
     build()
