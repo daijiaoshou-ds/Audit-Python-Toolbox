@@ -34,6 +34,7 @@ assets/models/**/__pycache__/
 
 # 忽略测试文件
 test.py
+demo.py
 
 # --- 5. 文档文件 ---
 imports_analysis.md
