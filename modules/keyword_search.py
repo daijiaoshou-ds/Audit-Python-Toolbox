@@ -566,7 +566,7 @@ class ExcelComEngine:
                         
                         formula_found += 1
                         new_formula = None
-                        self.log(f"[调试] 检查公式[{formula_found}]: {formula}")
+                        # self.log(f"[调试] 检查公式[{formula_found}]: {formula}")
                         
                         # 尝试匹配完整路径格式（可在公式任意位置）：='path[filename]SheetName'!Range
                         # 支持：$A$1（单个单元格）、$A$1:$N$29（范围）、$B:$B（整列）、$1:$1（整行）
