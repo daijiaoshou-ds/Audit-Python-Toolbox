@@ -133,70 +133,213 @@ def scan_header_and_map_columns(worksheet, mode: str,
                                 fuzzy_cols: Optional[List[str]] = None, 
                                 fuzzy_threshold: float = 0.6,
                                 scan_rows: int = 15) -> Dict[int, str]:
-    """扫描表头并建立映射"""
+    """扫描表头并建立映射 - 支持合并单元格和多行列头"""
     max_scan = min(worksheet.max_row, scan_rows)
     if max_scan == 0:
         return {}
+    
+    # 检测是否为只读模式
+    is_readonly = hasattr(worksheet, 'read_only') and worksheet.read_only
+    
+    # 🔧 修复：收集多行列头信息
+    # 在只读模式下使用 iter_rows，在正常模式下使用 cell
+    multi_row_headers = {}  # col_idx -> [value1, value2, ...]
+    merged_value_map = {}  # (row, col) -> value（只读模式下用于推断合并单元格）
+    
+    try:
+        if is_readonly:
+            # 只读模式：使用 iter_rows
+            # 尝试获取合并单元格信息
+            # 在只读模式下，合并单元格的值只在左上角出现
+            # 我们需要通过扫描来推断合并单元格的范围
+            
+            for row_idx, row in enumerate(worksheet.iter_rows(min_row=1, max_row=max_scan, values_only=False), 1):
+                for col_idx, cell in enumerate(row, 1):
+                    cell_value = cell.value
+                    if cell_value is not None:
+                        cell_str = str(cell_value).strip()
+                        if cell_str:
+                            if col_idx not in multi_row_headers:
+                                multi_row_headers[col_idx] = []
+                            # 如果这个值之前出现过且是连续的，可能存在合并单元格
+                            multi_row_headers[col_idx].append(cell_str)
+            
+            # 🔧 改进：在只读模式下，通过观察数据来推断合并单元格
+            # 如果某列在连续多行有相同的值，说明可能是合并单元格
+            for col_idx, values in multi_row_headers.items():
+                if len(values) >= 2:
+                    # 检查是否有连续相同的值（合并单元格特征）
+                    i = 0
+                    while i < len(values) - 1:
+                        if values[i] == values[i + 1]:
+                            # 找到合并单元格的范围
+                            j = i + 1
+                            while j < len(values) and values[j] == values[i]:
+                                j += 1
+                            # 合并单元格的值应用到最后一行
+                            merged_value_map[(i + 1, col_idx)] = values[i]
+                            merged_value_map[(j, col_idx)] = values[i]
+                            i = j
+                        else:
+                            i += 1
+        else:
+            # 正常模式：使用 cell 和 merged_cells
+            # 检测合并单元格
+            try:
+                if hasattr(worksheet, 'merged_cells') and worksheet.merged_cells:
+                    for merge_range in worksheet.merged_cells.ranges:
+                        min_col, min_row, max_col, max_row = merge_range.bounds
+                        top_left_value = worksheet.cell(row=min_row, column=min_col).value
+                        if top_left_value is None:
+                            continue
+                        for row in range(min_row, max_row + 1):
+                            for col in range(min_col, max_col + 1):
+                                merged_value_map[(row, col)] = top_left_value
+            except Exception:
+                pass
+            
+            # 收集多行列头信息
+            for row in range(1, max_scan + 1):
+                for col in range(1, worksheet.max_column + 1):
+                    cell_value = merged_value_map.get((row, col))
+                    if cell_value is None:
+                        cell_value = worksheet.cell(row=row, column=col).value
+                    
+                    if cell_value is not None:
+                        cell_str = str(cell_value).strip()
+                        if cell_str:
+                            if col not in multi_row_headers:
+                                multi_row_headers[col] = []
+                            multi_row_headers[col].append(cell_str)
+    except Exception as e:
+        # 如果出错，回退到简单扫描
+        multi_row_headers = {}
+    
+    # 如果没有收集到多行信息，回退到原始逻辑
+    if not multi_row_headers:
+        best_mapping = {}
+        max_matches = -1
+        
+        try:
+            for r in range(1, max_scan + 1):
+                row_values = []
+                for c in range(1, worksheet.max_column + 1):
+                    if is_readonly:
+                        # 只读模式
+                        cell = list(worksheet.iter_rows(min_row=r, max_row=r, values_only=True))[0] if r <= worksheet.max_row else []
+                        val = cell[c - 1] if c <= len(cell) else None
+                    else:
+                        val = worksheet.cell(row=r, column=c).value
+                    row_values.append(str(val).strip() if val is not None else "")
+
+                if all(v == "" for v in row_values):
+                    continue
+                current_mapping = {}
+                
+                if mode == 'all':
+                    name_counter = {}
+                    for c_idx, val in enumerate(row_values, 1):
+                        if not val:
+                            continue
+                        count = name_counter.get(val, 0)
+                        final_name = val if count == 0 else f"{val}_{count}"
+                        name_counter[val] = count + 1
+                        current_mapping[c_idx] = final_name
+                    if current_mapping:
+                        return current_mapping
+                else:
+                    matches_count = 0
+                    name_counter = {}
+                    exact_cols = exact_cols or []
+                    fuzzy_cols = fuzzy_cols or []
+                    
+                    for c_idx, val in enumerate(row_values, 1):
+                        if not val:
+                            continue
+                        val_lower = val.lower()
+                        matched_name = None
+                        
+                        for target in exact_cols:
+                            if target.lower() == val_lower:
+                                matched_name = target
+                                break
+                        
+                        if not matched_name and fuzzy_cols:
+                            for target in fuzzy_cols:
+                                if is_fuzzy_match(target, val, fuzzy_threshold):
+                                    matched_name = target
+                                    break
+                        
+                        if matched_name:
+                            count = name_counter.get(matched_name, 0)
+                            final_key = matched_name if count == 0 else f"{matched_name}_{count}"
+                            name_counter[matched_name] = count + 1
+                            current_mapping[c_idx] = final_key
+                            matches_count += 1
+                    
+                    if matches_count > max_matches:
+                        max_matches = matches_count
+                        best_mapping = current_mapping
+        except Exception:
+            pass
+        
+        return best_mapping
+    
+    # 使用多行列头信息进行匹配
     best_mapping = {}
     max_matches = -1
+    exact_cols = exact_cols or []
+    fuzzy_cols = fuzzy_cols or []
     
-    for r in range(1, max_scan + 1):
-        row_values = []
-        for c in range(1, worksheet.max_column + 1):
-            val = worksheet.cell(row=r, column=c).value
-            row_values.append(str(val).strip() if val is not None else "")
-
-        if all(v == "" for v in row_values):
+    for col_idx in range(1, worksheet.max_column + 1):
+        if col_idx not in multi_row_headers:
             continue
-        current_mapping = {}
+        
+        header_values = multi_row_headers[col_idx]
+        combined_header = " ".join(header_values)
         
         if mode == 'all':
-            name_counter = {}
-            for c_idx, val in enumerate(row_values, 1):
-                if not val:
-                    continue
-                count = name_counter.get(val, 0)
-                final_name = val if count == 0 else f"{val}_{count}"
-                name_counter[val] = count + 1
-                current_mapping[c_idx] = final_name
-            if current_mapping:
-                return current_mapping
-
+            if combined_header.strip():
+                count = sum(1 for m in best_mapping.values() if m == combined_header.strip() or m.startswith(combined_header.strip() + "_"))
+                final_name = combined_header.strip() if count == 0 else f"{combined_header.strip()}_{count}"
+                best_mapping[col_idx] = final_name
         else:
-            matches_count = 0
-            name_counter = {}
-            exact_cols = exact_cols or []
-            fuzzy_cols = fuzzy_cols or []
+            matched_name = None
             
-            for c_idx, val in enumerate(row_values, 1):
-                if not val:
-                    continue
-                val_lower = val.lower()
-                matched_name = None
-                
-                # 精确匹配
+            for header_val in header_values:
                 for target in exact_cols:
-                    if target.lower() == val_lower:
+                    if target.lower() == header_val.lower():
+                        matched_name = target
+                        break
+                if matched_name:
+                    break
+            
+            if not matched_name and fuzzy_cols:
+                for header_val in header_values:
+                    for target in fuzzy_cols:
+                        if is_fuzzy_match(target, header_val, fuzzy_threshold):
+                            matched_name = target
+                            break
+                    if matched_name:
+                        break
+            
+            if not matched_name:
+                for target in exact_cols:
+                    if target.lower() in combined_header.lower():
                         matched_name = target
                         break
                 
-                # 模糊匹配
-                if not matched_name and fuzzy_cols:
+                if not matched_name:
                     for target in fuzzy_cols:
-                        if is_fuzzy_match(target, val, fuzzy_threshold):
+                        if is_fuzzy_match(target, combined_header, fuzzy_threshold):
                             matched_name = target
                             break
-                
-                if matched_name:
-                    count = name_counter.get(matched_name, 0)
-                    final_key = matched_name if count == 0 else f"{matched_name}_{count}"
-                    name_counter[matched_name] = count + 1
-                    current_mapping[c_idx] = final_key
-                    matches_count += 1
             
-            if matches_count > max_matches:
-                max_matches = matches_count
-                best_mapping = current_mapping
+            if matched_name:
+                count = sum(1 for m in best_mapping.values() if m == matched_name or m.startswith(matched_name + "_"))
+                final_key = matched_name if count == 0 else f"{matched_name}_{count}"
+                best_mapping[col_idx] = final_key
+                max_matches += 1
     
     return best_mapping
 
@@ -1204,7 +1347,7 @@ class ColumnExtractorModule:
             if FASTEXCEL_AVAILABLE:
                 ctk.CTkLabel(
                     f_engine, 
-                    text="⚡ polars模式-推荐保存为csv", 
+                    text="⚡ fastexcel已安装 - Rust级别速度", 
                     text_color="#27AE60", 
                     font=("Microsoft YaHei", 11)
                 ).pack(side="left")
@@ -1379,3 +1522,4 @@ class ColumnExtractorModule:
                 messagebox.showinfo("成功", f"数据提取完成！\n模式: {engine_mode}\n格式: {save_format}")
 
         threading.Thread(target=t, daemon=True).start()
+        
