@@ -133,7 +133,22 @@ def scan_header_and_map_columns(worksheet, mode: str,
                                 fuzzy_cols: Optional[List[str]] = None, 
                                 fuzzy_threshold: float = 0.6,
                                 scan_rows: int = 15) -> Dict[int, str]:
-    """扫描表头并建立映射 - 支持合并单元格和多行列头"""
+    """扫描表头并建立映射 - 支持合并单元格和多行列头，支持列头在任意行
+    
+    策略：
+    1. 智能识别"表头行"：扫描前scan_rows行，找出最可能包含列名的行
+       - 有多个非空单元格（+2分/个）
+       - 如果用户指定了列名，则包含匹配的目标列（+10分精确，+5分模糊）
+       - 值是文本且长度适中2-30字符（+1分）
+    2. 识别合并单元格范围（用于正确获取合并单元格的值）
+    3. 从表头行及其相邻行收集列头信息
+    4. 对于每列，优先使用表头行的值，表头行没有则看相邻行
+    
+    这样可以正确处理：
+    - 列头在任意行（如第3行、第5行）
+    - 多行表头（列名分布在多行）
+    - 合并单元格
+    """
     max_scan = min(worksheet.max_row, scan_rows)
     if max_scan == 0:
         return {}
@@ -141,205 +156,186 @@ def scan_header_and_map_columns(worksheet, mode: str,
     # 检测是否为只读模式
     is_readonly = hasattr(worksheet, 'read_only') and worksheet.read_only
     
-    # 🔧 修复：收集多行列头信息
-    # 在只读模式下使用 iter_rows，在正常模式下使用 cell
-    multi_row_headers = {}  # col_idx -> [value1, value2, ...]
-    merged_value_map = {}  # (row, col) -> value（只读模式下用于推断合并单元格）
-    
-    try:
-        if is_readonly:
-            # 只读模式：使用 iter_rows
-            # 尝试获取合并单元格信息
-            # 在只读模式下，合并单元格的值只在左上角出现
-            # 我们需要通过扫描来推断合并单元格的范围
-            
-            for row_idx, row in enumerate(worksheet.iter_rows(min_row=1, max_row=max_scan, values_only=False), 1):
-                for col_idx, cell in enumerate(row, 1):
-                    cell_value = cell.value
-                    if cell_value is not None:
-                        cell_str = str(cell_value).strip()
-                        if cell_str:
-                            if col_idx not in multi_row_headers:
-                                multi_row_headers[col_idx] = []
-                            # 如果这个值之前出现过且是连续的，可能存在合并单元格
-                            multi_row_headers[col_idx].append(cell_str)
-            
-            # 🔧 改进：在只读模式下，通过观察数据来推断合并单元格
-            # 如果某列在连续多行有相同的值，说明可能是合并单元格
-            for col_idx, values in multi_row_headers.items():
-                if len(values) >= 2:
-                    # 检查是否有连续相同的值（合并单元格特征）
-                    i = 0
-                    while i < len(values) - 1:
-                        if values[i] == values[i + 1]:
-                            # 找到合并单元格的范围
-                            j = i + 1
-                            while j < len(values) and values[j] == values[i]:
-                                j += 1
-                            # 合并单元格的值应用到最后一行
-                            merged_value_map[(i + 1, col_idx)] = values[i]
-                            merged_value_map[(j, col_idx)] = values[i]
-                            i = j
-                        else:
-                            i += 1
-        else:
-            # 正常模式：使用 cell 和 merged_cells
-            # 检测合并单元格
-            try:
-                if hasattr(worksheet, 'merged_cells') and worksheet.merged_cells:
-                    for merge_range in worksheet.merged_cells.ranges:
-                        min_col, min_row, max_col, max_row = merge_range.bounds
-                        top_left_value = worksheet.cell(row=min_row, column=min_col).value
-                        if top_left_value is None:
-                            continue
-                        for row in range(min_row, max_row + 1):
-                            for col in range(min_col, max_col + 1):
-                                merged_value_map[(row, col)] = top_left_value
-            except Exception:
-                pass
-            
-            # 收集多行列头信息
-            for row in range(1, max_scan + 1):
-                for col in range(1, worksheet.max_column + 1):
-                    cell_value = merged_value_map.get((row, col))
-                    if cell_value is None:
-                        cell_value = worksheet.cell(row=row, column=col).value
-                    
-                    if cell_value is not None:
-                        cell_str = str(cell_value).strip()
-                        if cell_str:
-                            if col not in multi_row_headers:
-                                multi_row_headers[col] = []
-                            multi_row_headers[col].append(cell_str)
-    except Exception as e:
-        # 如果出错，回退到简单扫描
-        multi_row_headers = {}
-    
-    # 如果没有收集到多行信息，回退到原始逻辑
-    if not multi_row_headers:
-        best_mapping = {}
-        max_matches = -1
-        
-        try:
-            for r in range(1, max_scan + 1):
-                row_values = []
-                for c in range(1, worksheet.max_column + 1):
-                    if is_readonly:
-                        # 只读模式
-                        cell = list(worksheet.iter_rows(min_row=r, max_row=r, values_only=True))[0] if r <= worksheet.max_row else []
-                        val = cell[c - 1] if c <= len(cell) else None
-                    else:
-                        val = worksheet.cell(row=r, column=c).value
-                    row_values.append(str(val).strip() if val is not None else "")
-
-                if all(v == "" for v in row_values):
-                    continue
-                current_mapping = {}
-                
-                if mode == 'all':
-                    name_counter = {}
-                    for c_idx, val in enumerate(row_values, 1):
-                        if not val:
-                            continue
-                        count = name_counter.get(val, 0)
-                        final_name = val if count == 0 else f"{val}_{count}"
-                        name_counter[val] = count + 1
-                        current_mapping[c_idx] = final_name
-                    if current_mapping:
-                        return current_mapping
-                else:
-                    matches_count = 0
-                    name_counter = {}
-                    exact_cols = exact_cols or []
-                    fuzzy_cols = fuzzy_cols or []
-                    
-                    for c_idx, val in enumerate(row_values, 1):
-                        if not val:
-                            continue
-                        val_lower = val.lower()
-                        matched_name = None
-                        
-                        for target in exact_cols:
-                            if target.lower() == val_lower:
-                                matched_name = target
-                                break
-                        
-                        if not matched_name and fuzzy_cols:
-                            for target in fuzzy_cols:
-                                if is_fuzzy_match(target, val, fuzzy_threshold):
-                                    matched_name = target
-                                    break
-                        
-                        if matched_name:
-                            count = name_counter.get(matched_name, 0)
-                            final_key = matched_name if count == 0 else f"{matched_name}_{count}"
-                            name_counter[matched_name] = count + 1
-                            current_mapping[c_idx] = final_key
-                            matches_count += 1
-                    
-                    if matches_count > max_matches:
-                        max_matches = matches_count
-                        best_mapping = current_mapping
-        except Exception:
-            pass
-        
-        return best_mapping
-    
-    # 使用多行列头信息进行匹配
-    best_mapping = {}
-    max_matches = -1
     exact_cols = exact_cols or []
     fuzzy_cols = fuzzy_cols or []
     
+    # ========== 第1步：智能识别表头行 ==========
+    header_row_scores = {}
+    
+    for row_idx in range(1, max_scan + 1):
+        score = 0
+        matched_cols = 0
+        non_empty_cells = 0
+        
+        try:
+            for col_idx in range(1, worksheet.max_column + 1):
+                if is_readonly:
+                    cells = list(worksheet.iter_rows(min_row=row_idx, max_row=row_idx, values_only=True))
+                    cell_val = cells[0][col_idx - 1] if cells and col_idx <= len(cells[0]) else None
+                else:
+                    cell_val = worksheet.cell(row=row_idx, column=col_idx).value
+                
+                if cell_val is not None:
+                    cell_str = str(cell_val).strip()
+                    if cell_str:
+                        non_empty_cells += 1
+                        
+                        # 匹配用户指定的列名
+                        if mode != 'all':
+                            val_lower = cell_str.lower()
+                            for target in exact_cols:
+                                if target.lower() == val_lower:
+                                    score += 10  # 精确匹配高分
+                                    matched_cols += 1
+                                    break
+                            else:
+                                for target in fuzzy_cols:
+                                    if is_fuzzy_match(target, cell_str, fuzzy_threshold):
+                                        score += 5  # 模糊匹配中等分
+                                        matched_cols += 1
+                                        break
+                            
+                            # 额外加分：文本且长度适中
+                            if 2 <= len(cell_str) <= 30:
+                                score += 1
+                
+            # 基础分：非空单元格数量（表头行通常有多个非空单元格）
+            if non_empty_cells > 0:
+                score += non_empty_cells * 2
+            
+            # 至少要有2个非空单元格才算有效表头候选
+            if non_empty_cells >= 2:
+                header_row_scores[row_idx] = score
+        except Exception:
+            continue
+    
+    if not header_row_scores:
+        # 没有找到有效的表头行，回退到第一行
+        header_row = 1
+    else:
+        # 选择得分最高的行作为表头行
+        header_row = max(header_row_scores.items(), key=lambda x: (x[1], -x[0]))[0]
+    
+    # ========== 第2步：收集合并单元格信息 ==========
+    merged_cells_map = {}  # (row, col) -> value
+    
+    if not is_readonly:
+        try:
+            if hasattr(worksheet, 'merged_cells') and worksheet.merged_cells:
+                for merge_range in worksheet.merged_cells.ranges:
+                    min_col, min_row_val, max_col, max_row_val = merge_range.bounds
+                    top_left_value = worksheet.cell(row=min_row_val, column=min_col).value
+                    if top_left_value is not None:
+                        for row in range(min_row_val, max_row_val + 1):
+                            for col in range(min_col, max_col + 1):
+                                merged_cells_map[(row, col)] = top_left_value
+        except Exception:
+            pass
+    
+    # ========== 第3步：从表头行及相邻行收集列头 ==========
+    # 定义扫描范围：表头行 + 前后各1行（用于处理多行表头）
+    header_block_start = max(1, header_row - 1)
+    header_block_end = min(max_scan, header_row + 1)
+    
+    column_headers = {}  # col_idx -> [(row_idx, value), ...]
+    
+    for row_idx in range(header_block_start, header_block_end + 1):
+        try:
+            for col_idx in range(1, worksheet.max_column + 1):
+                # 获取单元格值（处理合并单元格）
+                cell_value = merged_cells_map.get((row_idx, col_idx))
+                if cell_value is None:
+                    if is_readonly:
+                        cells = list(worksheet.iter_rows(min_row=row_idx, max_row=row_idx, values_only=True))
+                        cell_value = cells[0][col_idx - 1] if cells and col_idx <= len(cells[0]) else None
+                    else:
+                        cell_value = worksheet.cell(row=row_idx, column=col_idx).value
+                
+                if cell_value is not None:
+                    cell_str = str(cell_value).strip()
+                    if cell_str:
+                        if col_idx not in column_headers:
+                            column_headers[col_idx] = []
+                        column_headers[col_idx].append((row_idx, cell_str))
+        except Exception:
+            continue
+    
+    # ========== 第4步：使用收集到的列头信息进行匹配 ==========
+    best_mapping = {}
+    
     for col_idx in range(1, worksheet.max_column + 1):
-        if col_idx not in multi_row_headers:
+        if col_idx not in column_headers:
             continue
         
-        header_values = multi_row_headers[col_idx]
-        combined_header = " ".join(header_values)
+        header_values = column_headers[col_idx]
+        # 按行号排序
+        header_values_sorted = sorted(header_values, key=lambda x: x[0])
+        
+        # 优先使用表头行的值
+        header_row_value = None
+        adjacent_row_values = []
+        
+        for row_idx, val in header_values_sorted:
+            if row_idx == header_row:
+                header_row_value = val
+            else:
+                adjacent_row_values.append((row_idx, val))
+        
+        # 最终使用的列头值：优先表头行，其次相邻行
+        final_header_val = header_row_value
+        if final_header_val is None and adjacent_row_values:
+            final_header_val = adjacent_row_values[0][1]  # 取第一个相邻行的值
+        
+        if final_header_val is None:
+            continue
         
         if mode == 'all':
-            if combined_header.strip():
-                count = sum(1 for m in best_mapping.values() if m == combined_header.strip() or m.startswith(combined_header.strip() + "_"))
-                final_name = combined_header.strip() if count == 0 else f"{combined_header.strip()}_{count}"
-                best_mapping[col_idx] = final_name
+            # 返回表头行的值作为列名
+            count = sum(1 for m in best_mapping.values() if m == final_header_val or m.startswith(final_header_val + "_"))
+            final_name = final_header_val if count == 0 else f"{final_header_val}_{count}"
+            best_mapping[col_idx] = final_name
         else:
             matched_name = None
             
-            for header_val in header_values:
+            # 精确匹配：优先检查表头行的值
+            if header_row_value:
                 for target in exact_cols:
-                    if target.lower() == header_val.lower():
+                    if target.lower() == header_row_value.lower():
                         matched_name = target
                         break
-                if matched_name:
-                    break
             
-            if not matched_name and fuzzy_cols:
-                for header_val in header_values:
-                    for target in fuzzy_cols:
-                        if is_fuzzy_match(target, header_val, fuzzy_threshold):
+            # 如果表头行没匹配，检查相邻行
+            if not matched_name:
+                for row_idx, header_val in adjacent_row_values:
+                    for target in exact_cols:
+                        if target.lower() == header_val.lower():
                             matched_name = target
                             break
                     if matched_name:
                         break
             
-            if not matched_name:
-                for target in exact_cols:
-                    if target.lower() in combined_header.lower():
-                        matched_name = target
-                        break
-                
-                if not matched_name:
+            # 模糊匹配：优先检查表头行的值
+            if not matched_name and fuzzy_cols:
+                if header_row_value:
                     for target in fuzzy_cols:
-                        if is_fuzzy_match(target, combined_header, fuzzy_threshold):
+                        if is_fuzzy_match(target, header_row_value, fuzzy_threshold):
                             matched_name = target
+                            break
+                
+                # 如果表头行没匹配，检查相邻行
+                if not matched_name:
+                    for row_idx, header_val in adjacent_row_values:
+                        for target in fuzzy_cols:
+                            if is_fuzzy_match(target, header_val, fuzzy_threshold):
+                                matched_name = target
+                                break
+                        if matched_name:
                             break
             
             if matched_name:
                 count = sum(1 for m in best_mapping.values() if m == matched_name or m.startswith(matched_name + "_"))
                 final_key = matched_name if count == 0 else f"{matched_name}_{count}"
                 best_mapping[col_idx] = final_key
-                max_matches += 1
     
     return best_mapping
 
