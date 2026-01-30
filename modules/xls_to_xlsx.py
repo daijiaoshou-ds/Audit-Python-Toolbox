@@ -8,6 +8,7 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import threading
 import pandas as pd
+import chardet  # 用于自动检测CSV编码
 
 # --- 核心转换函数 ---
 
@@ -121,6 +122,55 @@ def convert_format_change_logic(src_file, dest_file):
     except Exception as e:
         return False, str(e)
 
+# === 【新增】CSV 转 XLSX 核心逻辑 ===
+def convert_csv_to_xlsx_logic(src_file, dest_file):
+    """
+    [模式4] csv -> xlsx
+    自动检测文件编码，支持 UTF-8、GBK、GB2312、GB18030 等中文编码
+    """
+    try:
+        # 1. 检测文件编码
+        with open(src_file, 'rb') as f:
+            raw_data = f.read(100000)  # 读取前100KB检测编码（足够判断）
+            result = chardet.detect(raw_data)
+            detected_encoding = result['encoding'] if result['encoding'] else 'utf-8'
+            confidence = result['confidence'] if result['confidence'] else 0
+        
+        # 2. 尝试读取CSV（优先使用检测到的编码，失败则回退）
+        encodings_to_try = [detected_encoding] if detected_encoding else []
+        encodings_to_try += ['utf-8-sig', 'utf-8', 'gbk', 'gb2312', 'gb18030', 'latin1']
+        
+        df = None
+        last_error = None
+        
+        for encoding in encodings_to_try:
+            try:
+                # 使用 pandas 读取 CSV
+                # engine='python' 对不规则 CSV 更宽容，但慢一些；先用 'c' 引擎
+                df = pd.read_csv(src_file, encoding=encoding, engine='python')
+                break
+            except Exception as e:
+                last_error = e
+                continue
+        
+        if df is None:
+            return False, f"无法解析CSV文件(尝试编码: {', '.join(encodings_to_try)}): {str(last_error)}"
+        
+        # 3. 写入 Excel
+        with pd.ExcelWriter(dest_file, engine='openpyxl') as writer:
+            # 使用原文件名为 Sheet 名（去掉扩展名，限制31字符）
+            sheet_name = os.path.splitext(os.path.basename(src_file))[0]
+            if len(sheet_name) > 31:
+                sheet_name = sheet_name[:28] + "..."
+            
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+        
+        return True, ""
+        
+    except Exception as e:
+        return False, f"CSV转换失败: {str(e)}"
+
+
 # --- 辅助函数：文件名冲突处理 ---
 
 def get_unique_dest_path(folder, filename):
@@ -149,11 +199,13 @@ def core_process_folder(src_folder, dst_folder, mode_index, copy_others, save_in
     else:
         abs_dst = None 
 
+    # === 【修改】新增 CSV->XLSX 模式 (索引4) ===
     mode_config = {
         0: (['.xls'], '.xlsx', convert_xls_to_xlsx_logic),
         1: (['.xlsx'], '.xls', convert_xlsx_to_xls_logic),
         2: (['.xlsx'], '.xlsm', convert_format_change_logic),
-        3: (['.xlsm'], '.xlsx', convert_format_change_logic)
+        3: (['.xlsm'], '.xlsx', convert_format_change_logic),
+        4: (['.csv'], '.xlsx', convert_csv_to_xlsx_logic)  # 新增
     }
 
     src_exts, target_ext, func = mode_config.get(mode_index)
@@ -257,11 +309,13 @@ class XLSToXLSXModule:
         self.name = "Excel 格式互转"
         self.src_path = None
         self.dst_path = None
+        # === 【修改】新增 CSV 转换模式 ===
         self.modes = [
             "1. 旧版转新版 (.xls -> .xlsx)",
             "2. 新版转旧版 (.xlsx -> .xls)",
             "3. 启用宏格式 (.xlsx -> .xlsm)",
-            "4. 移除宏格式 (.xlsm -> .xlsx)"
+            "4. 移除宏格式 (.xlsm -> .xlsx)",
+            "5. CSV转Excel (.csv -> .xlsx)"  # 新增
         ]
         # self.app 会由 main.py 注入
 
