@@ -49,6 +49,20 @@ def build():
         '--collect-all=scipy', 
         '--collect-all=polars',
         '--collect-all=pyarrow',
+
+        # 【新增】强制收集依赖库的 Metadata (修复 Transformers 版本检查报错)
+        # ==================================================
+        '--copy-metadata=tqdm',
+        '--copy-metadata=regex',
+        '--copy-metadata=requests',
+        '--copy-metadata=tokenizers',
+        '--copy-metadata=filelock',
+        '--copy-metadata=huggingface_hub',
+        '--copy-metadata=safetensors',
+        '--copy-metadata=transformers',
+        '--copy-metadata=sentence_transformers',
+        '--copy-metadata=numpy',
+        # ==================================================
         
         '--hidden-import=numpy',
         '--hidden-import=pandas',

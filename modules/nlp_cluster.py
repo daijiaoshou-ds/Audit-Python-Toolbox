@@ -459,9 +459,34 @@ class NLPClusterModule:
                     self.log(">>> 任务强制终止")
 
             except Exception as e:
-                self.log(f"Error: {e}")
+                # ==================== 将报错写入日志文件 ====================
                 import traceback
-                print(traceback.format_exc())
+                import sys
+                import os
+                
+                # 获取日志存放路径（放在 exe 旁边）
+                if getattr(sys, 'frozen', False):
+                    log_dir = os.path.dirname(sys.executable)
+                else:
+                    log_dir = os.getcwd()
+                
+                log_path = os.path.join(log_dir, "error_log.txt")
+                
+                # 写入详细报错
+                with open(log_path, "w", encoding="utf-8") as f:
+                    f.write("="*60 + "\n")
+                    f.write("CRASH REPORT - 基米工具箱 NLP 模块\n")
+                    f.write("="*60 + "\n")
+                    f.write(traceback.format_exc())
+                    f.write("\n" + "="*60 + "\n")
+                
+                # 弹窗提示
+                messagebox.showerror(
+                    "程序崩溃", 
+                    f"程序运行时发生错误。\n\n详细的错误日志已保存至:\n{log_path}\n\n请将此文件发给开发者查看。"
+                )
+                
+                self.log_box.insert("end", f"\n发生严重错误，详情见 {log_path}\n")
             finally:
                 if hasattr(self, 'app'): self.app.finish_task(self.module_index)
                 self.btn_run.configure(state="normal", text="🚀 开始 AI 聚类分析")
